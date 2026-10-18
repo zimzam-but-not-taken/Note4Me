@@ -840,7 +840,11 @@ function buildMenu() {
     {
       label: 'Edit',
       submenu: [
-        role('undo', 'CmdOrCtrl+Z'), role('redo', 'CmdOrCtrl+Shift+Z'), { type: 'separator' },
+        // The note's undo history lives in the editor, not in Chromium, so the
+        // menu asks the window; other windows and text fields get the native undo.
+        { label: 'Undo', accelerator: roleAcc('CmdOrCtrl+Z'), click: () => (BrowserWindow.getFocusedWindow() === win ? send('cmd', 'undo') : wc()?.undo()) },
+        { label: 'Redo', accelerator: roleAcc('CmdOrCtrl+Shift+Z'), click: () => (BrowserWindow.getFocusedWindow() === win ? send('cmd', 'redo') : wc()?.redo()) },
+        { type: 'separator' },
         role('cut', 'CmdOrCtrl+X'), role('copy', 'CmdOrCtrl+C'), role('paste', 'CmdOrCtrl+V'),
         item('paste-plain', 'Paste Without Formatting', () => wc()?.pasteAndMatchStyle()),
         role('selectAll', 'CmdOrCtrl+A'),

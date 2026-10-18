@@ -1,7 +1,7 @@
 // Note4Me renderer: tree + editor + glue.
 
 import { Editor, Extension, InputRule, markInputRule, textblockTypeInputRule } from '@tiptap/core';
-import { Plugin, PluginKey, Selection, TextSelection } from '@tiptap/pm/state';
+import { EditorState, Plugin, PluginKey, Selection, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -99,13 +99,20 @@ function resolveSrc(src) {
   return 'nb://local/' + rel.split('/').map(encodeURIComponent).join('/');
 }
 
+// the path of a notebook file as written from inside `dir` ("../a/b.png")
+function relativeTo(dir, rel) {
+  const a = dir ? dir.split('/') : [];
+  const b = rel.split('/');
+  let i = 0;
+  while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++;
+  return [...Array(a.length - i).fill('..'), ...b.slice(i)].join('/');
+}
+
 function unresolveSrc(src) {
   if (!src || !src.startsWith('nb://local/')) return src;
   const rel = decodeURIComponent(src.slice('nb://local/'.length));
-  const dir = currentDir();
-  const prefix = dir ? dir + '/' : '';
-  const r = rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
-  return r.split('/').map(encodeURIComponent).join('/');
+  // An image pasted into a note in another folder keeps pointing at its file.
+  return relativeTo(currentDir(), rel).split('/').map(encodeURIComponent).join('/');
 }
 
 // Drag a corner handle; calls onMove(dx, dy) while dragging and onEnd() after.
@@ -543,11 +550,37 @@ function revealPos(pos) {
 
 // --- editor construction ----------------------------------------------------
 
-function buildEditor(json) {
+// One editor for the whole session. Switching notes swaps its state instead
+// of rebuilding it, and the state of every note visited is kept, so ⌘Z after
+// coming back to a note still undoes what was done there (a cut image, say).
+// A note whose file changed on disk meanwhile starts afresh.
+const noteStates = new Map(); // note rel -> EditorState
+let editorRel = null; // the note the editor is showing
+
+const inTextField = () => /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+
+function buildEditor(json, rel = null) {
   if (editor) {
+    if (editorRel) noteStates.set(editorRel, editor.state);
+    editorRel = rel;
+    let next = null;
+    try {
+      const doc = editor.schema.nodeFromJSON(json);
+      const saved = rel ? noteStates.get(rel) : null;
+      next = saved && saved.doc.eq(doc) ? saved : EditorState.create({ doc, plugins: editor.state.plugins });
+    } catch (err) {
+      console.warn('rebuilding editor', err);
+    }
+    if (next) {
+      editor.view.updateState(next);
+      editor.view.dispatch(editor.state.tr.setMeta(searchKey, true)); // find-in-note decorations for this note
+      updateToolbar();
+      return;
+    }
     editor.destroy();
     editor = null;
   }
+  editorRel = rel;
   editor = new Editor({
     element: $('#editor'),
     extensions: [
@@ -581,7 +614,7 @@ function buildEditor(json) {
       Color,
       BackgroundColor,
       NoteCodeBlock.configure({ lowlight, defaultLanguage: null, exitOnTripleEnter: true, exitOnArrowDown: true }),
-      NoteImage,
+      NoteImage.configure({ allowBase64: true }), // embedded images copied within the app paste back
       SearchExtension,
       MarkdownTyping,
       LabelExtension,
@@ -704,7 +737,7 @@ async function loadNote(rel) {
   state.current = rel;
   state.raw = raw || '';
   state.dirty = false;
-  buildEditor(parseMarkdown(body || ''));
+  buildEditor(parseMarkdown(body || ''), rel);
   $('#status-save').textContent = '';
   renderBreadcrumb();
   if (search.term) refreshSearch(false);
@@ -721,6 +754,7 @@ async function openNotebook(dir) {
   if (!res) return false;
   state.root = res.root;
   state.current = null;
+  noteStates.clear();
   const prefs = nbPrefs();
   if (Array.isArray(prefs.collapsed)) state.collapsed = new Set(prefs.collapsed);
   else {
@@ -1388,8 +1422,8 @@ const commands = {
   rename: () => state.current && startRename(state.current),
   delete: () => deleteNode(),
   reveal: () => state.current && window.api.shell.reveal(state.current),
-  undo: () => editor?.chain().focus().undo().run(),
-  redo: () => editor?.chain().focus().redo().run(),
+  undo: () => (inTextField() ? document.execCommand('undo') : editor?.chain().focus().undo().run()),
+  redo: () => (inTextField() ? document.execCommand('redo') : editor?.chain().focus().redo().run()),
   bold: () => {
     if (!editor) return;
     // a heading already reads as bold, so ⌘B on one makes it normal text again
