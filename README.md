@@ -155,7 +155,10 @@ line or bullet it left empty.
 
 **Search** at the top of the tree looks through the contents of every note
 and lists the matching lines grouped by note. Enter on a hit jumps to it.
-There are toggles for case, regular expressions, and searching titles only.
+Click a note's title to fold its hits away (⌥-click folds them all), and
+pick a top-level node from the menu under the box to search only that
+branch. There are toggles for case, regular expressions, and searching
+titles only.
 
 **Images** pasted from the clipboard are embedded in the note itself, so the
 folder holds nothing but notes. If you'd rather have files, switch to

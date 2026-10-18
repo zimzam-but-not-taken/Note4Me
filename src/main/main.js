@@ -376,7 +376,7 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-ipcMain.handle('search:all', async (_e, { query, caseSensitive, regex, titlesOnly }) => {
+ipcMain.handle('search:all', async (_e, { query, caseSensitive, regex, titlesOnly, scope }) => {
   if (!root || !query) return { results: [], total: 0, truncated: false };
   let re;
   try {
@@ -384,7 +384,9 @@ ipcMain.handle('search:all', async (_e, { query, caseSensitive, regex, titlesOnl
   } catch (err) {
     return { results: [], total: 0, error: err.message };
   }
-  const nodes = flatten(await scanDir(''));
+  let nodes = flatten(await scanDir(''));
+  // scope: a node's rel; only it and the notes under it are searched
+  if (scope) nodes = nodes.filter((n) => n.rel === scope || n.rel.startsWith(scope.replace(/\.md$/, '') + '/'));
   const results = [];
   let total = 0;
   const MAX_TOTAL = 2000;

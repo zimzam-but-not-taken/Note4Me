@@ -790,6 +790,7 @@ function setTree(tree) {
   };
   walk(tree, null);
   renderTree();
+  populateScope();
 }
 
 async function refreshTree() {
@@ -1198,6 +1199,17 @@ function persistPrefs() {
 
 let searchTimer = null;
 let searchSeq = 0;
+const srCollapsed = new Set(); // notes whose hits are folded away in the results
+
+// The scope menu lists the top-level nodes, so a search can be kept to one
+// branch. Rebuilt whenever the tree changes; the pick survives if it still exists.
+function populateScope() {
+  const sel = $('#search-scope');
+  const was = sel.value;
+  sel.replaceChildren(new Option('All notes', ''));
+  for (const n of state.tree) sel.appendChild(new Option(n.title, n.rel));
+  sel.value = [...sel.options].some((o) => o.value === was) ? was : '';
+}
 
 function titlesMode() {
   return $('#search-titles').checked;
@@ -1215,6 +1227,7 @@ function onSearchInput() {
   const active = q.trim().length > 0;
   $('#search-close').hidden = !active;
   $('#search-opts').hidden = !active;
+  $('#search-scope-row').hidden = !active || titlesMode();
   if (!active) {
     state.filter = '';
     renderTree();
@@ -1237,6 +1250,7 @@ function onSearchInput() {
 
 function clearSearch() {
   $('#search-input').value = '';
+  srCollapsed.clear();
   onSearchInput();
   $('#tree').focus();
 }
@@ -1254,6 +1268,7 @@ async function runSearch() {
     caseSensitive: $('#search-case').checked,
     regex: $('#search-regex').checked,
     titlesOnly: false,
+    scope: $('#search-scope').value,
   });
   if (seq !== searchSeq) return; // a newer search superseded this one
   list.replaceChildren();
@@ -1267,23 +1282,52 @@ async function runSearch() {
   if (!res.results.length) {
     const empty = document.createElement('div');
     empty.className = 'sr-empty';
-    empty.textContent = 'No matches in any note.';
+    empty.textContent = $('#search-scope').value ? 'No matches in this branch.' : 'No matches in any note.';
     list.appendChild(empty);
     return;
   }
   const frag = document.createDocumentFragment();
   for (const r of res.results) {
+    // Clicking a note's title folds its hits away (and back); a note matched
+    // only by its title has nothing to fold, so the click opens it instead.
+    const bodyHits = r.hits.filter((h) => !h.title).length;
     const head = document.createElement('div');
     head.className = 'sr-node';
     head.tabIndex = 0;
-    head.textContent = r.title;
+    const twisty = document.createElement('span');
+    twisty.className = 'sr-twisty';
+    const title = document.createElement('span');
+    title.className = 'sr-title';
+    title.textContent = r.title;
+    const count = document.createElement('span');
+    count.className = 'sr-count';
+    count.textContent = bodyHits;
     const p = document.createElement('span');
     p.className = 'sr-path';
     p.textContent = r.rel.replace(/\.md$/, '').split('/').slice(0, -1).join(' / ') || '(top level)';
-    head.appendChild(p);
-    head.onclick = () => openHit(r.rel, query, 0);
-    head.onkeydown = (e) => { if (e.key === 'Enter') head.onclick(); };
-    frag.appendChild(head);
+    head.append(twisty, title, count, p);
+    const group = document.createElement('div');
+    group.className = 'sr-group';
+    const fold = (on) => {
+      head.classList.toggle('collapsed', on);
+      group.hidden = on;
+      if (on) srCollapsed.add(r.rel);
+      else srCollapsed.delete(r.rel);
+    };
+    if (bodyHits) fold(srCollapsed.has(r.rel));
+    else head.classList.add('leaf');
+    head.onclick = (e) => {
+      if (!bodyHits) return openHit(r.rel, query, 0);
+      if (e.altKey) {
+        // ⌥-click folds or unfolds every note
+        const on = !head.classList.contains('collapsed');
+        for (const n of list.querySelectorAll('.sr-node:not(.leaf)')) if (n.classList.contains('collapsed') !== on) n.click();
+        return;
+      }
+      fold(!head.classList.contains('collapsed'));
+    };
+    head.onkeydown = (e) => { if (e.key === 'Enter') head.click(); };
+    frag.append(head, group);
     r.hits.forEach((h, k) => {
       if (h.title) return;
       const el = document.createElement('div');
@@ -1299,7 +1343,7 @@ async function runSearch() {
       const bodyIndex = r.hits.slice(0, k).filter((x) => !x.title).length;
       el.onclick = () => openHit(r.rel, h.match, bodyIndex);
       el.onkeydown = (e) => { if (e.key === 'Enter') el.onclick(); };
-      frag.appendChild(el);
+      group.appendChild(el);
     });
   }
   list.appendChild(frag);
@@ -1666,9 +1710,9 @@ function wire() {
     }
   });
   $('#search-close').onclick = clearSearch;
-  for (const id of ['#search-case', '#search-regex', '#search-titles']) $(id).addEventListener('change', onSearchInput);
+  for (const id of ['#search-case', '#search-regex', '#search-titles', '#search-scope']) $(id).addEventListener('change', onSearchInput);
   $('#search-results').addEventListener('keydown', (e) => {
-    const items = [...document.querySelectorAll('#search-results [tabindex]')];
+    const items = [...document.querySelectorAll('#search-results [tabindex]')].filter((el) => el.offsetParent !== null);
     const i = items.indexOf(document.activeElement);
     if (e.key === 'ArrowDown' && i < items.length - 1) { e.preventDefault(); items[i + 1].focus(); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); if (i > 0) items[i - 1].focus(); else $('#search-input').focus(); }
