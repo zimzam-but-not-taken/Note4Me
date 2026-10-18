@@ -15,9 +15,10 @@ only CherryTree can read, the Mac build has always been a bit of a stranger on
 macOS, and a decade of notes is a lot to bet on any single project staying
 alive.
 
-Markdown is king. Files in a folder outlive any app, they diff, they grep,
-and they open in Obsidian, VS Code or GitHub. But Markdown-only notes suck for
-notes like these. There is no text colour or highlight. There is no real tree,
+Markdown is king in the AI age. Files in a folder outlive any app, they
+diff, they grep, they open in Obsidian, VS Code or GitHub, and every model and
+agent out there reads and writes Markdown natively. Notes in a SQLite blob are
+invisible to all of that. But Markdown-only notes suck for notes like these. There is no text colour or highlight. There is no real tree,
 just folders. Every `*`, `_` and `#` inside a shell command picks a fight with
 the syntax, and a code box is three backticks and a prayer.
 
