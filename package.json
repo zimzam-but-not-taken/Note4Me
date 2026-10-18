@@ -5,10 +5,10 @@
   "main": "src/main/main.js",
   "private": true,
   "scripts": {
-    "build": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --log-level=warning",
-    "build:min": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --minify --log-level=warning",
+    "build": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --splitting --outdir=dist --format=esm --loader:.css=text --log-level=warning",
+    "build:min": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --splitting --outdir=dist --format=esm --loader:.css=text --minify --log-level=warning",
     "start": "npm run build && electron .",
-    "watch": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --watch",
+    "watch": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --splitting --outdir=dist --format=esm --loader:.css=text --watch",
     "package": "sh build/package.sh",
     "install-app": "sh build/install.sh"
   },

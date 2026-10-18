@@ -16,27 +16,150 @@ import Heading from '@tiptap/extension-heading';
 import { TextStyle, Color, BackgroundColor } from '@tiptap/extension-text-style';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Image from '@tiptap/extension-image';
-import { common, createLowlight } from 'lowlight';
-// A curated language set instead of lowlight's `all` (190+ grammars, ~2 MB).
-// `common` covers the mainstream languages; the extras below are the ones a
-// pentest/dev notebook actually uses. Unregistered languages just render as
-// plain text, so nothing breaks — the box simply isn't colourised.
-import powershell from 'highlight.js/lib/languages/powershell';
-import dockerfile from 'highlight.js/lib/languages/dockerfile';
-import nginx from 'highlight.js/lib/languages/nginx';
-import apache from 'highlight.js/lib/languages/apache';
-import http from 'highlight.js/lib/languages/http';
-import x86asm from 'highlight.js/lib/languages/x86asm';
-import armasm from 'highlight.js/lib/languages/armasm';
-import vbscript from 'highlight.js/lib/languages/vbscript';
-import properties from 'highlight.js/lib/languages/properties';
+import { createLowlight } from 'lowlight';
 import { parseMarkdown, serializeMarkdown } from './md.js';
 import { applyThemeVars, applyAlpha, themeIsDark } from './theme.js';
 import { ICON_STYLES, DEFAULT_ICON_COLORS, nodeIcon as drawNodeIcon, iconDefs } from './icons.js';
 import { SHORTCUTS, resolveKeys } from '../shared/shortcuts.js';
 
-const lowlight = createLowlight(common);
-lowlight.register({ powershell, dockerfile, nginx, apache, http, 'x86asm': x86asm, armasm, vbscript, properties });
+// Lazy syntax highlighting: lowlight starts with no grammars, so a note
+// with no code box loads none. Each language is a separate chunk (esbuild
+// code-splitting) fetched the first time a code box uses it. LANG_LOADERS
+// maps a fence language to its import; ALIASES fold common spellings in.
+const LANG_LOADERS = {
+  'bash': () => import('highlight.js/lib/languages/bash'),
+  'shell': () => import('highlight.js/lib/languages/shell'),
+  'powershell': () => import('highlight.js/lib/languages/powershell'),
+  'python': () => import('highlight.js/lib/languages/python'),
+  'javascript': () => import('highlight.js/lib/languages/javascript'),
+  'typescript': () => import('highlight.js/lib/languages/typescript'),
+  'json': () => import('highlight.js/lib/languages/json'),
+  'yaml': () => import('highlight.js/lib/languages/yaml'),
+  'xml': () => import('highlight.js/lib/languages/xml'),
+  'sql': () => import('highlight.js/lib/languages/sql'),
+  'php': () => import('highlight.js/lib/languages/php'),
+  'ruby': () => import('highlight.js/lib/languages/ruby'),
+  'perl': () => import('highlight.js/lib/languages/perl'),
+  'go': () => import('highlight.js/lib/languages/go'),
+  'rust': () => import('highlight.js/lib/languages/rust'),
+  'c': () => import('highlight.js/lib/languages/c'),
+  'cpp': () => import('highlight.js/lib/languages/cpp'),
+  'csharp': () => import('highlight.js/lib/languages/csharp'),
+  'java': () => import('highlight.js/lib/languages/java'),
+  'kotlin': () => import('highlight.js/lib/languages/kotlin'),
+  'swift': () => import('highlight.js/lib/languages/swift'),
+  'lua': () => import('highlight.js/lib/languages/lua'),
+  'r': () => import('highlight.js/lib/languages/r'),
+  'css': () => import('highlight.js/lib/languages/css'),
+  'scss': () => import('highlight.js/lib/languages/scss'),
+  'less': () => import('highlight.js/lib/languages/less'),
+  'markdown': () => import('highlight.js/lib/languages/markdown'),
+  'ini': () => import('highlight.js/lib/languages/ini'),
+  'properties': () => import('highlight.js/lib/languages/properties'),
+  'makefile': () => import('highlight.js/lib/languages/makefile'),
+  'dockerfile': () => import('highlight.js/lib/languages/dockerfile'),
+  'nginx': () => import('highlight.js/lib/languages/nginx'),
+  'apache': () => import('highlight.js/lib/languages/apache'),
+  'http': () => import('highlight.js/lib/languages/http'),
+  'diff': () => import('highlight.js/lib/languages/diff'),
+  'graphql': () => import('highlight.js/lib/languages/graphql'),
+  'objectivec': () => import('highlight.js/lib/languages/objectivec'),
+  'vbnet': () => import('highlight.js/lib/languages/vbnet'),
+  'vbscript': () => import('highlight.js/lib/languages/vbscript'),
+  'x86asm': () => import('highlight.js/lib/languages/x86asm'),
+  'armasm': () => import('highlight.js/lib/languages/armasm'),
+  'wasm': () => import('highlight.js/lib/languages/wasm'),
+  'plaintext': () => import('highlight.js/lib/languages/plaintext'),
+};
+const LANG_ALIASES = {
+  'sh': 'bash',
+  'zsh': 'bash',
+  'console': 'shell',
+  'ps': 'powershell',
+  'ps1': 'powershell',
+  'py': 'python',
+  'js': 'javascript',
+  'ts': 'typescript',
+  'yml': 'yaml',
+  'html': 'xml',
+  'htm': 'xml',
+  'rb': 'ruby',
+  'pl': 'perl',
+  'golang': 'go',
+  'rs': 'rust',
+  'c++': 'cpp',
+  'cs': 'csharp',
+  'kt': 'kotlin',
+  'md': 'markdown',
+  'conf': 'ini',
+  'dockerfile': 'dockerfile',
+  'asm': 'x86asm',
+  'arm': 'armasm',
+  'vbs': 'vbscript',
+  'text': 'plaintext',
+  'txt': 'plaintext',
+  'objc': 'objectivec',
+  'vb': 'vbnet',
+};
+
+const lowlight = createLowlight();
+const LANG_NAMES = Object.keys(LANG_LOADERS).sort();
+const loadedLangs = new Set();
+const loadingLangs = new Map();
+// Canonical loader key for a fence language ('py' -> 'python'); null if unknown.
+function langKey(name) {
+  if (!name) return null;
+  const n = String(name).toLowerCase();
+  const k = LANG_ALIASES[n] || n;
+  return LANG_LOADERS[k] ? k : null;
+}
+// Load a language's grammar once, register it, and return whether it became
+// newly available (so the caller can re-highlight).
+function ensureLang(name) {
+  const k = langKey(name);
+  if (!k || loadedLangs.has(k)) return Promise.resolve(false);
+  if (loadingLangs.has(k)) return loadingLangs.get(k);
+  const p = LANG_LOADERS[k]()
+    .then((mod) => { if (!loadedLangs.has(k)) { lowlight.register(k, mod.default); loadedLangs.add(k); } loadingLangs.delete(k); return true; })
+    .catch(() => { loadingLangs.delete(k); return false; });
+  loadingLangs.set(k, p);
+  return p;
+}
+// Every distinct language used by a code box in the document.
+function codeLangsIn(doc) {
+  const out = new Set();
+  doc.descendants((n) => { if (n.type.name === 'codeBlock' && n.attrs.language) out.add(n.attrs.language); });
+  return out;
+}
+// Re-run highlighting on code boxes whose language just loaded, without
+// dirtying the note or touching undo history.
+let suppressDirty = false;
+function rehighlightLoaded() {
+  if (!editor) return;
+  const { state } = editor;
+  let tr = null;
+  state.doc.descendants((n, pos) => {
+    if (n.type.name === 'codeBlock' && n.attrs.language && loadedLangs.has(langKey(n.attrs.language))) {
+      tr = (tr || state.tr).setNodeMarkup(pos, undefined, { ...n.attrs });
+    }
+  });
+  if (!tr) return;
+  tr.setMeta('addToHistory', false);
+  suppressDirty = true;
+  editor.view.dispatch(tr);
+  suppressDirty = false;
+}
+// Ensure the languages a document uses are loaded, then re-highlight once.
+function ensureDocLangs() {
+  if (!editor) return;
+  const need = [...codeLangsIn(editor.state.doc)].filter((l) => langKey(l) && !loadedLangs.has(langKey(l)));
+  if (!need.length) return;
+  Promise.all(need.map(ensureLang)).then((r) => { if (r.some(Boolean)) rehighlightLoaded(); });
+}
+// Load one language (e.g. from the dropdown or a typed fence) then re-highlight.
+function ensureLangThenRehighlight(name) {
+  ensureLang(name).then((loaded) => { if (loaded) rehighlightLoaded(); });
+}
 const $ = (sel) => document.querySelector(sel);
 
 // ---------------------------------------------------------------------------
@@ -174,7 +297,7 @@ const MarkdownTyping = Extension.create({
     const gate = (rule) => new InputRule({ find: rule.find, handler: (p) => (mdOn() ? rule.handler(p) : null) });
     const mark = (find, name) => markInputRule({ find, type: schema.marks[name] });
     return [
-      textblockTypeInputRule({ find: /^```([\w+#-]*)\s$/, type: schema.nodes.codeBlock, getAttributes: (m) => ({ language: m[1] || null }) }),
+      textblockTypeInputRule({ find: /^```([\w+#-]*)\s$/, type: schema.nodes.codeBlock, getAttributes: (m) => { if (m[1]) ensureLangThenRehighlight(m[1]); return { language: m[1] || null }; } }),
       mark(/(?:^|\s)(\*\*(?!\s+\*\*)([^*]+)\*\*(?!\s+\*\*))$/, 'bold'),
       mark(/(?:^|\s)(__(?!\s+__)([^_]+)__(?!\s+__))$/, 'bold'),
       mark(/(?:^|\s)(\*(?!\s+\*)([^*]+)\*(?!\s+\*))$/, 'italic'),
@@ -589,6 +712,7 @@ function buildEditor(json, rel = null) {
       editor.view.updateState(next);
       editor.view.dispatch(editor.state.tr.setMeta(searchKey, true)); // find-in-note decorations for this note
       updateToolbar();
+      ensureDocLangs(); // load any code-box languages this note uses
       return;
     }
     editor.destroy();
@@ -652,6 +776,8 @@ function buildEditor(json, rel = null) {
       },
     },
     onUpdate: () => {
+      // a re-highlight after a language loads must not dirty the note
+      if (suppressDirty) { updateToolbar(); return; }
       state.dirty = true;
       scheduleSave();
       updateToolbar();
@@ -659,6 +785,7 @@ function buildEditor(json, rel = null) {
     onSelectionUpdate: () => updateToolbar(),
   });
   updateToolbar();
+  ensureDocLangs(); // load any code-box languages this note uses
 }
 
 const inCodeBlock = (st) => {
@@ -1160,7 +1287,10 @@ function extendSelection(headFor) {
 function toggleCodeBlock() {
   if (!editor) return;
   if (editor.isActive('codeBlock')) editor.chain().focus().toggleCodeBlock().run();
-  else editor.chain().focus().toggleCodeBlock({ language: state.lastLang || null }).run();
+  else {
+    if (state.lastLang) ensureLangThenRehighlight(state.lastLang);
+    editor.chain().focus().toggleCodeBlock({ language: state.lastLang || null }).run();
+  }
 }
 
 function setZoom(px) {
@@ -1627,9 +1757,10 @@ function wire() {
   });
   const langSel = $('#lang');
   langSel.appendChild(new Option('auto', ''));
-  for (const name of lowlight.listLanguages().sort()) langSel.appendChild(new Option(name, name));
+  for (const name of LANG_NAMES) langSel.appendChild(new Option(name, name));
   langSel.addEventListener('change', () => {
     state.lastLang = langSel.value;
+    if (langSel.value) ensureLangThenRehighlight(langSel.value); // load the grammar; re-highlight when ready
     editor?.chain().focus().updateAttributes('codeBlock', { language: langSel.value || null }).run();
     persistPrefs();
   });
