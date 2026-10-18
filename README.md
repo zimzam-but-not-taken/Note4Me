@@ -111,7 +111,18 @@ top turns all of them off.
 
 Right-click a node for the same tree operations.
 
-## The small things
+## Quality of life, from years in CherryTree
+
+Note4Me was built by someone who lived in CherryTree for years, so on top of
+copying what it does well it fixes the small things that wore thin along the
+way. Colour no longer leaks onto the next word you type. Leaving a code box
+takes one arrow press, not two. Tab indents the first bullet of a list
+instead of refusing. ⌃⇧→ selects a word at a time rather than the whole
+line. Find and replace scrolls to each match and can take the emptied line
+with it. Section titles typed as `#### Like This ####` stay as typed, and
+`[GOAL]`-style labels light up on their own. Every one of those came from
+noticing something annoying on a real notebook and fixing it that day. The
+details:
 
 **Markdown while typing** is on by default (Settings › Editor, or the Format
 menu). `**bold**`, `*italic*`, `` `code` ``, `~~strike~~` and ```` ``` ````
