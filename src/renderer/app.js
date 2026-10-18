@@ -614,12 +614,20 @@ function buildEditor(json) {
   updateToolbar();
 }
 
+const inCodeBlock = (st) => {
+  const { $from, $to } = st.selection;
+  return $from.parent.type.name === 'codeBlock' || $to.parent.type.name === 'codeBlock';
+};
+
 function handlePaste(view, event) {
   const items = [...(event.clipboardData?.items || [])];
   const img = items.find((it) => it.type.startsWith('image/'));
   if (!img) {
     // With Markdown typing on, plain text that reads like Markdown is parsed as such.
-    if (!mdOn() || !editor) return false;
+    // Inside a code box nothing is Markdown: the text goes in as it is, which
+    // ProseMirror does by itself for code blocks. Parsing it here used to turn
+    // `# comment`, `- flag` and backtick lines into paragraphs that split the box.
+    if (!mdOn() || !editor || inCodeBlock(view.state)) return false;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (event.clipboardData?.getData('text/html') || !looksLikeMarkdown(text)) return false;
     event.preventDefault();
