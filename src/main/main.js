@@ -20,8 +20,22 @@ const { resolveKeys, normalizeAccelerator } = require('../shared/shortcuts.js');
   app.setPath('userData', dir);
 }
 
+// All note windows share the one open notebook. `win` points at the active one
+// (the last focused), so dialogs, menu commands and the context menu act on the
+// window the user is looking at; `noteWins` is every open note window, for the
+// things that must reach all of them (settings, theme, tree changes).
 let win = null;
+const noteWins = new Set();
 let root = null; // absolute path of the open notebook
+
+// everything in a channel, to every note window
+function broadcast(channel, ...args) {
+  for (const w of noteWins) if (!w.isDestroyed()) w.webContents.send(channel, ...args);
+}
+// to every note window except the one that caused the change
+function broadcastOthers(sender, channel, ...args) {
+  for (const w of noteWins) if (!w.isDestroyed() && w.webContents !== sender) w.webContents.send(channel, ...args);
+}
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 
 const THEMES = [
@@ -224,7 +238,7 @@ ipcMain.handle('note:write', async (_e, rel, body, raw) => {
 // IPC: node operations
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('node:create', async (_e, { parentRel, afterRel, title }) => {
+ipcMain.handle('node:create', async (e, { parentRel, afterRel, title }) => {
   let dirRel = '';
   if (parentRel) dirRel = parentRel.replace(/\.md$/, '');
   else if (afterRel) dirRel = path.posix.dirname(afterRel) === '.' ? '' : path.posix.dirname(afterRel);
@@ -240,10 +254,11 @@ ipcMain.handle('node:create', async (_e, { parentRel, afterRel, title }) => {
   if (idx >= 0) without.splice(idx + 1, 0, stem);
   else without.push(stem);
   await writeOrder(dirAbs, without);
+  broadcastOthers(e.sender, 'notebook-changed');
   return path.posix.join(dirRel, stem + '.md');
 });
 
-ipcMain.handle('node:rename', async (_e, { rel, title }) => {
+ipcMain.handle('node:rename', async (e, { rel, title }) => {
   const oldAbs = abs(rel);
   const dirAbs = path.dirname(oldAbs);
   const oldStem = path.basename(rel, '.md');
@@ -265,10 +280,11 @@ ipcMain.handle('node:rename', async (_e, { rel, title }) => {
     const order = await readOrder(dirAbs);
     await writeOrder(dirAbs, order.map((s) => (s === oldStem ? stem : s)));
   }
+  broadcastOthers(e.sender, 'notebook-changed');
   return path.posix.join(path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel), stem + '.md');
 });
 
-ipcMain.handle('node:delete', async (_e, rel) => {
+ipcMain.handle('node:delete', async (e, rel) => {
   const file = abs(rel);
   const dir = file.replace(/\.md$/, '');
   await shell.trashItem(file).catch(() => fs.rm(file, { force: true }));
@@ -276,10 +292,11 @@ ipcMain.handle('node:delete', async (_e, rel) => {
   const dirAbs = path.dirname(file);
   const order = await readOrder(dirAbs);
   await writeOrder(dirAbs, order.filter((s) => s !== path.basename(rel, '.md')));
+  broadcastOthers(e.sender, 'notebook-changed');
   return true;
 });
 
-ipcMain.handle('node:move', async (_e, { rel, op }) => {
+ipcMain.handle('node:move', async (e, { rel, op }) => {
   const stem = path.posix.basename(rel, '.md');
   const { dir, stems } = await siblingsOf(rel);
   const dirAbs = abs(dir || '.');
@@ -290,17 +307,22 @@ ipcMain.handle('node:move', async (_e, { rel, op }) => {
     if (j < 0 || j >= stems.length) return rel;
     [stems[i], stems[j]] = [stems[j], stems[i]];
     await writeOrder(dirAbs, stems);
+    broadcastOthers(e.sender, 'notebook-changed');
     return rel;
   }
   if (op === 'indent') {
     if (i === 0) return rel;
     const newParent = stems[i - 1];
-    return moveNode(dirAbs, stem, path.posix.join(dir, newParent), path.join(dirAbs, newParent), null);
+    const r = await moveNode(dirAbs, stem, path.posix.join(dir, newParent), path.join(dirAbs, newParent), null);
+    broadcastOthers(e.sender, 'notebook-changed');
+    return r;
   }
   if (op === 'outdent') {
     if (!dir) return rel;
     const parentDir = path.posix.dirname(dir) === '.' ? '' : path.posix.dirname(dir);
-    return moveNode(dirAbs, stem, parentDir, abs(parentDir || '.'), path.posix.basename(dir));
+    const r = await moveNode(dirAbs, stem, parentDir, abs(parentDir || '.'), path.posix.basename(dir));
+    broadcastOthers(e.sender, 'notebook-changed');
+    return r;
   }
   return rel;
 });
@@ -357,8 +379,8 @@ ipcMain.handle('asset:save', async (_e, { noteRel, bytes, ext }) => {
 // so the native material (and menus) match instead of going white.
 ipcMain.handle('window:appearance', (_e, { dark, blur }) => {
   nativeTheme.themeSource = dark ? 'dark' : 'light';
-  if (win) {
-    try { win.setVibrancy(blur ? 'sidebar' : null); } catch { /* ignore */ }
+  for (const w of noteWins) {
+    try { w.setVibrancy(blur ? 'sidebar' : null); } catch { /* ignore */ }
   }
 });
 
@@ -501,13 +523,13 @@ function openSettingsWindow(section) {
       keysSuspended = false;
       buildMenu();
     }
-    send('settings-revert'); // drop any un-saved live preview
+    broadcast('settings-revert'); // drop any un-saved live preview
   });
 }
 
 ipcMain.handle('settings:open', (_e, section) => openSettingsWindow(section));
 ipcMain.handle('settings:close', () => settingsWin?.close());
-ipcMain.on('settings:preview', (_e, patch) => send('settings-preview', patch));
+ipcMain.on('settings:preview', (_e, patch) => broadcast('settings-preview', patch));
 ipcMain.on('keys:suspend', (_e, on) => {
   if (keysSuspended === !!on) return;
   keysSuspended = !!on;
@@ -607,13 +629,17 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'nb', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-function createWindow() {
+function createWindow({ primary = false } = {}) {
   const s = loadSettings();
-  win = new BrowserWindow({
+  // Cascade a second window off the active one so it doesn't land exactly on top.
+  const base = win && !win.isDestroyed() ? win.getBounds() : null;
+  const w = new BrowserWindow({
     width: s.width || 1400,
     height: s.height || 900,
     minWidth: 700,
     minHeight: 400,
+    x: base ? base.x + 32 : undefined,
+    y: base ? base.y + 32 : undefined,
     title: 'Note4Me',
     show: !process.env.NOTE4ME_HIDDEN, // NOTE4ME_HIDDEN=1: headless checks without a window
     // A truly transparent window: with blur on, macOS draws a frosted material
@@ -631,43 +657,49 @@ function createWindow() {
       spellcheck: true,
     },
   });
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  win.webContents.on('context-menu', (_e, params) => showContextMenu(params));
-  // Headless screenshot for development: NOTE4ME_SHOT=/path/out.png
-  if (process.env.NOTE4ME_SHOT) {
-    win.webContents.on('console-message', (_e, level, message) => {
+  noteWins.add(w);
+  win = w;
+  w.flushed = false;
+  w.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  w.webContents.on('context-menu', (_e, params) => showContextMenu(params));
+  // The active window is whichever was focused last; dialogs and menu commands
+  // follow it.
+  w.on('focus', () => { win = w; });
+  // Headless screenshot for development: NOTE4ME_SHOT=/path/out.png (first window only)
+  if (primary && process.env.NOTE4ME_SHOT) {
+    w.webContents.on('console-message', (_e, level, message) => {
       if (level >= 2) console.log(`[renderer] ${message}`);
     });
-    win.webContents.once('did-finish-load', () => {
+    w.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         // NOTE4ME_SHOT_JS: optional script to drive the UI before the capture
         if (process.env.NOTE4ME_SHOT_JS) {
-          const r = await win.webContents.executeJavaScript(process.env.NOTE4ME_SHOT_JS).catch((e) => console.log('shot js failed:', e.message));
+          const r = await w.webContents.executeJavaScript(process.env.NOTE4ME_SHOT_JS).catch((e) => console.log('shot js failed:', e.message));
           if (r !== undefined) console.log('shot js:', JSON.stringify(r));
           await new Promise((r) => setTimeout(r, 900));
         }
-        const img = await win.capturePage();
+        const img = await w.capturePage();
         fssync.writeFileSync(process.env.NOTE4ME_SHOT, img.toPNG());
         app.exit(0);
       }, Number(process.env.NOTE4ME_SHOT_DELAY || 2500));
     });
   }
-  win.on('resize', () => {
-    const [width, height] = win.getSize();
+  w.on('resize', () => {
+    const [width, height] = w.getSize();
     saveSettings({ width, height });
   });
   // Save the open note before the window closes or the app quits. A
   // prevented close would otherwise cancel a quit, so both paths share this.
-  win.flushed = false;
-  win.on('close', (e) => {
-    if (win.flushed) return;
+  w.on('close', (e) => {
+    if (w.flushed) return;
     e.preventDefault();
-    flushThen(() => win && win.close());
+    flushWindow(w, () => { if (!w.isDestroyed()) w.close(); });
   });
-  win.on('closed', () => {
-    if (process.env.NOTE4ME_SHOT) console.log('window closed', new Error().stack);
-    win = null;
+  w.on('closed', () => {
+    noteWins.delete(w);
+    if (win === w) win = [...noteWins].find((x) => !x.isDestroyed()) || null;
   });
+  return w;
 }
 
 function send(channel, ...args) {
@@ -759,27 +791,34 @@ function showContextMenu(p) {
   Menu.buildFromTemplate(items).popup({ window: win });
 }
 
-let flushing = false;
-function flushThen(fn) {
-  if (!win || win.flushed) return fn();
-  if (flushing) return;
-  flushing = true;
+// Ask one window's renderer to save its open note, then run `fn`. Each window
+// flushes on its own handshake so closing one never waits on another; the
+// `flushed` reply is matched to the window that sent the `flush`.
+function flushWindow(w, fn) {
+  if (!w || w.isDestroyed() || w.flushed) return fn();
+  if (w._flushing) return;
+  w._flushing = true;
+  let settled = false;
   const done = () => {
-    if (!flushing) return;
-    flushing = false;
-    if (win) win.flushed = true;
+    if (settled) return;
+    settled = true;
+    w._flushing = false;
+    if (!w.isDestroyed()) w.flushed = true;
+    ipcMain.removeListener('flushed', onFlushed);
+    clearTimeout(timer);
     fn();
   };
-  ipcMain.once('flushed', done);
-  setTimeout(done, 1500);
-  send('flush');
+  const onFlushed = (e) => { if (!w.isDestroyed() && e.sender === w.webContents) done(); };
+  ipcMain.on('flushed', onFlushed);
+  const timer = setTimeout(done, 1500);
+  w.webContents.send('flush');
 }
 
 app.on('before-quit', (e) => {
-  if (win && !win.flushed) {
-    e.preventDefault();
-    flushThen(() => app.quit());
-  }
+  const pending = [...noteWins].filter((w) => !w.isDestroyed() && !w.flushed);
+  if (!pending.length) return;
+  e.preventDefault();
+  Promise.all(pending.map((w) => new Promise((res) => flushWindow(w, res)))).then(() => app.quit());
 });
 
 function buildMenu() {
@@ -826,6 +865,7 @@ function buildMenu() {
       submenu: [
         item('open-notebook', 'Open Notebook…'),
         item('new-notebook', 'New Notebook…'),
+        item('new-window', 'New Window', () => createWindow()),
         { type: 'separator' },
         item('new-sibling', 'New Node (same level)'),
         item('new-child', 'New Child Node'),
@@ -970,9 +1010,9 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('menu failed to build:', err);
   }
-  createWindow();
+  createWindow({ primary: true });
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (noteWins.size === 0) createWindow({ primary: true });
   });
 });
 

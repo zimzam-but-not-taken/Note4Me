@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('api', {
   appearance: (opts) => ipcRenderer.invoke('window:appearance', opts),
   search: (opts) => ipcRenderer.invoke('search:all', opts),
   onCommand: (fn) => ipcRenderer.on('cmd', (_e, name) => fn(name)),
+  // another window changed the notebook's structure (new/rename/delete/move)
+  onNotebookChanged: (fn) => ipcRenderer.on('notebook-changed', () => fn()),
   onFlush: (fn) => ipcRenderer.on('flush', () => fn()),
   flushed: () => ipcRenderer.send('flushed'),
   // settings sync between windows

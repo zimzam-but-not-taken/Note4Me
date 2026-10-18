@@ -9,6 +9,7 @@
 const SHORTCUTS = [
   { group: 'Notebook', id: 'open-notebook', label: 'Open notebook…', key: 'CmdOrCtrl+O' },
   { group: 'Notebook', id: 'new-notebook', label: 'New notebook…', key: 'CmdOrCtrl+Shift+O' },
+  { group: 'Notebook', id: 'new-window', label: 'New window', key: '', native: true },
   { group: 'Notebook', id: 'new-sibling', label: 'New node (same level)', key: 'CmdOrCtrl+Shift+N' },
   { group: 'Notebook', id: 'new-child', label: 'New child node', key: 'CmdOrCtrl+N' },
   { group: 'Notebook', id: 'rename', label: 'Rename node', key: 'F2' },

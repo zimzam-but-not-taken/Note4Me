@@ -160,6 +160,13 @@ pick a top-level node from the menu under the box to search only that
 branch. There are toggles for case, regular expressions, and searching
 titles only.
 
+**Windows** File > New Window opens another window on the same notebook, so
+you can read or edit two notes at once. A node added, renamed, moved or
+deleted in one window updates the tree in the others, and a window picks up
+edits saved to the note it is showing when you click back into it (as long
+as it has no unsaved changes of its own). Bind a key to it in Settings if you
+like; it is unbound by default.
+
 **Images** pasted from the clipboard are embedded in the note itself, so the
 folder holds nothing but notes. If you'd rather have files, switch to
 `_assets/` in Settings. Drag an edge or the corner to resize, Shift to keep

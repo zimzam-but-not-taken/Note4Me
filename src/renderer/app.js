@@ -1817,6 +1817,35 @@ function wire() {
     window.api.flushed();
   });
   window.addEventListener('blur', () => saveCurrent());
+
+  // Multiple windows share one notebook. When another window changes the tree
+  // (new/rename/delete/move), refresh ours; if the note we had open was moved
+  // or deleted there, fall back to a blank editor.
+  window.api.onNotebookChanged(async () => {
+    if (!state.root) return;
+    await refreshTree();
+    if (state.current && !state.byRel.has(state.current)) {
+      state.current = null;
+      buildEditor({ type: 'doc', content: [{ type: 'paragraph' }] });
+    }
+  });
+  // When we regain focus, pick up edits another window saved to the same note.
+  // Only when we have no unsaved edits of our own, so we never clobber them.
+  window.addEventListener('focus', reloadIfChangedElsewhere);
+}
+
+// Re-read the open note and rebuild only if the file on disk differs from what
+// we are showing. Keeps two windows on the same note in step without resetting
+// the cursor on every focus.
+async function reloadIfChangedElsewhere() {
+  if (!state.current || state.dirty || !editor) return;
+  try {
+    const { raw, body } = await window.api.note.read(state.current);
+    if ((body || '') === serializeMarkdown(editor.getJSON())) return;
+    state.raw = raw || '';
+    buildEditor(parseMarkdown(body || ''), state.current);
+    if (search.term) refreshSearch(false);
+  } catch { /* note vanished; the tree refresh handles it */ }
 }
 
 async function main() {
