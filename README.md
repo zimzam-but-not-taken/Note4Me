@@ -158,7 +158,8 @@ and lists the matching lines grouped by note. Enter on a hit jumps to it.
 Click a note's title to fold its hits away (⌥-click folds them all), and
 pick a top-level node from the menu under the box to search only that
 branch. There are toggles for case, regular expressions, and searching
-titles only.
+titles only. The search runs on a background thread with a time limit, so a
+slow or runaway regular expression gives up instead of freezing the app.
 
 **Windows** File > New Window opens another window on the same notebook, so
 you can read or edit two notes at once. A node added, renamed, moved or

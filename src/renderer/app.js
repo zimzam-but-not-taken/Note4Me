@@ -16,13 +16,27 @@ import Heading from '@tiptap/extension-heading';
 import { TextStyle, Color, BackgroundColor } from '@tiptap/extension-text-style';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Image from '@tiptap/extension-image';
-import { all, createLowlight } from 'lowlight';
+import { common, createLowlight } from 'lowlight';
+// A curated language set instead of lowlight's `all` (190+ grammars, ~2 MB).
+// `common` covers the mainstream languages; the extras below are the ones a
+// pentest/dev notebook actually uses. Unregistered languages just render as
+// plain text, so nothing breaks — the box simply isn't colourised.
+import powershell from 'highlight.js/lib/languages/powershell';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import nginx from 'highlight.js/lib/languages/nginx';
+import apache from 'highlight.js/lib/languages/apache';
+import http from 'highlight.js/lib/languages/http';
+import x86asm from 'highlight.js/lib/languages/x86asm';
+import armasm from 'highlight.js/lib/languages/armasm';
+import vbscript from 'highlight.js/lib/languages/vbscript';
+import properties from 'highlight.js/lib/languages/properties';
 import { parseMarkdown, serializeMarkdown } from './md.js';
 import { applyThemeVars, applyAlpha, themeIsDark } from './theme.js';
 import { ICON_STYLES, DEFAULT_ICON_COLORS, nodeIcon as drawNodeIcon, iconDefs } from './icons.js';
 import { SHORTCUTS, resolveKeys } from '../shared/shortcuts.js';
 
-const lowlight = createLowlight(all);
+const lowlight = createLowlight(common);
+lowlight.register({ powershell, dockerfile, nginx, apache, http, 'x86asm': x86asm, armasm, vbscript, properties });
 const $ = (sel) => document.querySelector(sel);
 
 // ---------------------------------------------------------------------------

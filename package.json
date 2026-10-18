@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "build": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --log-level=warning",
+    "build:min": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --minify --log-level=warning",
     "start": "npm run build && electron .",
     "watch": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --watch",
     "package": "sh build/package.sh",
@@ -23,6 +24,7 @@
     "@tiptap/extension-text-style": "^3.32.0",
     "@tiptap/pm": "^3.32.0",
     "@tiptap/starter-kit": "^3.32.0",
+    "highlight.js": "^11.12.0",
     "lowlight": "^3.3.0"
   },
   "productName": "Note4Me",
