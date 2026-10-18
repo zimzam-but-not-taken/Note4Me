@@ -1,0 +1,33 @@
+{
+  "name": "note4me",
+  "version": "0.1.0",
+  "description": "CherryTree's editing, Obsidian's files: a hierarchical note app that stores plain Markdown on disk.",
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --log-level=warning",
+    "start": "npm run build && electron .",
+    "watch": "esbuild src/renderer/app.js src/renderer/settings.js --bundle --outdir=dist --format=iife --loader:.css=text --watch",
+    "package": "sh build/package.sh",
+    "install-app": "sh build/install.sh"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.8.0",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.32.0",
+    "@tiptap/extension-code-block-lowlight": "^3.32.0",
+    "@tiptap/extension-image": "^3.32.0",
+    "@tiptap/extension-text-style": "^3.32.0",
+    "@tiptap/pm": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0",
+    "lowlight": "^3.3.0"
+  },
+  "productName": "Note4Me",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zimzam-but-not-taken/Note4Me.git"
+  }
+}

@@ -1,0 +1,975 @@
+// Note4Me — Electron main process.
+// Owns the notebook folder: tree scanning, reading/writing notes, node
+// operations, notebook-wide search, settings (and the settings window), the
+// Markdown export, and a custom `nb://` protocol that serves images from
+// inside the notebook.
+
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session, shell } = require('electron');
+const path = require('node:path');
+const fs = require('node:fs/promises');
+const fssync = require('node:fs');
+const { pathToFileURL } = require('node:url');
+const { plainText } = require('../renderer/md.js');
+const { resolveKeys, normalizeAccelerator } = require('../shared/shortcuts.js');
+
+// One settings folder for both `npm start` and the packaged app.
+{
+  const dir = path.join(app.getPath('appData'), 'Note4Me');
+  const legacy = path.join(app.getPath('appData'), 'note4me');
+  if (!fssync.existsSync(dir) && fssync.existsSync(legacy)) fssync.cpSync(legacy, dir, { recursive: true });
+  app.setPath('userData', dir);
+}
+
+let win = null;
+let root = null; // absolute path of the open notebook
+const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+
+const THEMES = [
+  ['modern-dark', 'Modern Dark'],
+  ['modern-light', 'Modern Light'],
+  ['cherry-dark', 'Classic Dark'],
+  ['cherry-light', 'Classic Light'],
+  ['dracula', 'Dracula'],
+  ['nord', 'Nord'],
+  ['solarized-dark', 'Solarized Dark'],
+  ['custom', 'Custom…'],
+];
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+function loadSettings() {
+  try {
+    return JSON.parse(fssync.readFileSync(settingsPath(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveSettings(patch) {
+  const s = { ...loadSettings(), ...patch };
+  fssync.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+  fssync.writeFileSync(settingsPath(), JSON.stringify(s, null, 2));
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Notebook helpers
+// ---------------------------------------------------------------------------
+
+const BAD = { '/': '∕', '\\': '∕', ':': '꞉' };
+
+function sanitizeStem(name) {
+  let s = [...name].map((c) => BAD[c] ?? c).join('');
+  s = s.replace(/[\x00-\x1f]/g, '').trim().replace(/^\.+|\.+$/g, '');
+  s = s.slice(0, 120).trim() || 'untitled';
+  if (s.startsWith('_') || s.startsWith('.')) s = '_' + s.replace(/^[._]+/, '');
+  return s;
+}
+
+function abs(rel) {
+  if (!root) throw new Error('no notebook open');
+  const p = path.resolve(root, rel);
+  if (p !== root && !p.startsWith(root + path.sep)) throw new Error('path escapes notebook');
+  return p;
+}
+
+function parseFrontMatter(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  if (!m) return { front: {}, raw: '', body: text };
+  const front = {};
+  for (const line of m[1].split(/\r?\n/)) {
+    const mm = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+    if (!mm) continue;
+    let v = mm[2].trim();
+    if (v.startsWith('"') && v.endsWith('"')) {
+      try { v = JSON.parse(v); } catch { v = v.slice(1, -1); }
+    }
+    front[mm[1]] = v;
+  }
+  return { front, raw: m[0], body: text.slice(m[0].length) };
+}
+
+function yamlQuote(s) {
+  if (/^[A-Za-z0-9 _()\-,.]+$/.test(s) && !/^[-#]/.test(s.trim())) return s;
+  return JSON.stringify(s);
+}
+
+async function readOrder(dir) {
+  try {
+    const t = await fs.readFile(path.join(dir, '.order'), 'utf8');
+    return t.split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function writeOrder(dir, stems) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, '.order'), stems.map((s) => s + '\n').join(''));
+}
+
+async function readTitle(file, stem) {
+  try {
+    const fh = await fs.open(file, 'r');
+    const buf = Buffer.alloc(2048);
+    const { bytesRead } = await fh.read(buf, 0, 2048, 0);
+    await fh.close();
+    const head = buf.subarray(0, bytesRead).toString('utf8');
+    if (!head.startsWith('---')) return stem;
+    const { front } = parseFrontMatter(head);
+    return front.title || stem;
+  } catch {
+    return stem;
+  }
+}
+
+async function scanDir(relDir) {
+  const dir = abs(relDir || '.');
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files = entries.filter((e) => e.isFile() && e.name.endsWith('.md') && !/^[._]/.test(e.name));
+  const dirs = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name));
+  const order = await readOrder(dir);
+  const stems = files.map((f) => f.name.slice(0, -3));
+  const rank = new Map(order.map((s, i) => [s, i]));
+  stems.sort((a, b) => {
+    const ra = rank.has(a) ? rank.get(a) : Infinity;
+    const rb = rank.has(b) ? rank.get(b) : Infinity;
+    if (ra !== rb) return ra - rb;
+    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  });
+  const nodes = [];
+  for (const stem of stems) {
+    const rel = path.posix.join(relDir || '', stem + '.md');
+    const childDir = path.posix.join(relDir || '', stem);
+    nodes.push({
+      rel,
+      stem,
+      dir: relDir || '',
+      title: await readTitle(path.join(dir, stem + '.md'), stem),
+      children: dirs.has(stem) ? await scanDir(childDir) : [],
+    });
+  }
+  return nodes;
+}
+
+function flatten(nodes, out = []) {
+  for (const n of nodes) {
+    out.push(n);
+    flatten(n.children, out);
+  }
+  return out;
+}
+
+async function siblingsOf(relFile) {
+  const dir = path.posix.dirname(relFile) === '.' ? '' : path.posix.dirname(relFile);
+  const nodes = await scanDir(dir);
+  return { dir, stems: nodes.map((n) => n.stem) };
+}
+
+async function uniqueStem(dirAbs, base) {
+  let stem = base;
+  let k = 2;
+  while (fssync.existsSync(path.join(dirAbs, stem + '.md')) || fssync.existsSync(path.join(dirAbs, stem))) {
+    stem = `${base} (${k++})`;
+  }
+  return stem;
+}
+
+// ---------------------------------------------------------------------------
+// IPC: settings, notebook, notes
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('settings:get', () => loadSettings());
+ipcMain.handle('settings:set', (_e, patch) => applySettingsPatch(patch));
+
+ipcMain.handle('notebook:pick', async (_e, create) => {
+  const r = await dialog.showOpenDialog(win, {
+    title: create ? 'Choose an empty folder for the new notebook' : 'Open notebook folder',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  return r.filePaths[0];
+});
+
+ipcMain.handle('notebook:open', async (_e, dir) => {
+  if (!dir) return null;
+  const st = await fs.stat(dir).catch(() => null);
+  if (!st || !st.isDirectory()) return null;
+  root = path.resolve(dir);
+  saveSettings({ lastNotebook: root });
+  return { root, tree: await scanDir('') };
+});
+
+ipcMain.handle('notebook:tree', async () => (root ? await scanDir('') : []));
+
+ipcMain.handle('note:read', async (_e, rel) => {
+  const text = await fs.readFile(abs(rel), 'utf8').catch(() => '');
+  return parseFrontMatter(text);
+});
+
+ipcMain.handle('note:write', async (_e, rel, body, raw) => {
+  await fs.mkdir(path.dirname(abs(rel)), { recursive: true });
+  await fs.writeFile(abs(rel), (raw || '') + body, 'utf8');
+  return true;
+});
+
+// ---------------------------------------------------------------------------
+// IPC: node operations
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('node:create', async (_e, { parentRel, afterRel, title }) => {
+  let dirRel = '';
+  if (parentRel) dirRel = parentRel.replace(/\.md$/, '');
+  else if (afterRel) dirRel = path.posix.dirname(afterRel) === '.' ? '' : path.posix.dirname(afterRel);
+  const dirAbs = abs(dirRel || '.');
+  await fs.mkdir(dirAbs, { recursive: true });
+  const base = sanitizeStem(title || 'New Node');
+  const stem = await uniqueStem(dirAbs, base);
+  const front = stem !== title ? `---\ntitle: ${yamlQuote(title)}\n---\n` : '';
+  await fs.writeFile(path.join(dirAbs, stem + '.md'), front, 'utf8');
+  const { stems } = await siblingsOf(path.posix.join(dirRel, stem + '.md'));
+  const without = stems.filter((s) => s !== stem);
+  const idx = afterRel && !parentRel ? without.indexOf(path.posix.basename(afterRel, '.md')) : -1;
+  if (idx >= 0) without.splice(idx + 1, 0, stem);
+  else without.push(stem);
+  await writeOrder(dirAbs, without);
+  return path.posix.join(dirRel, stem + '.md');
+});
+
+ipcMain.handle('node:rename', async (_e, { rel, title }) => {
+  const oldAbs = abs(rel);
+  const dirAbs = path.dirname(oldAbs);
+  const oldStem = path.basename(rel, '.md');
+  const text = await fs.readFile(oldAbs, 'utf8').catch(() => '');
+  const { front, body } = parseFrontMatter(text);
+  let stem = sanitizeStem(title);
+  if (stem !== oldStem) stem = await uniqueStem(dirAbs, stem);
+  const keep = { ...front };
+  if (stem !== title) keep.title = title;
+  else delete keep.title;
+  const keys = Object.keys(keep);
+  const raw = keys.length ? '---\n' + keys.map((k) => `${k}: ${yamlQuote(String(keep[k]))}\n`).join('') + '---\n' : '';
+  await fs.writeFile(oldAbs, raw + body, 'utf8');
+  if (stem !== oldStem) {
+    await fs.rename(oldAbs, path.join(dirAbs, stem + '.md'));
+    if (fssync.existsSync(path.join(dirAbs, oldStem))) {
+      await fs.rename(path.join(dirAbs, oldStem), path.join(dirAbs, stem));
+    }
+    const order = await readOrder(dirAbs);
+    await writeOrder(dirAbs, order.map((s) => (s === oldStem ? stem : s)));
+  }
+  return path.posix.join(path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel), stem + '.md');
+});
+
+ipcMain.handle('node:delete', async (_e, rel) => {
+  const file = abs(rel);
+  const dir = file.replace(/\.md$/, '');
+  await shell.trashItem(file).catch(() => fs.rm(file, { force: true }));
+  if (fssync.existsSync(dir)) await shell.trashItem(dir).catch(() => fs.rm(dir, { recursive: true, force: true }));
+  const dirAbs = path.dirname(file);
+  const order = await readOrder(dirAbs);
+  await writeOrder(dirAbs, order.filter((s) => s !== path.basename(rel, '.md')));
+  return true;
+});
+
+ipcMain.handle('node:move', async (_e, { rel, op }) => {
+  const stem = path.posix.basename(rel, '.md');
+  const { dir, stems } = await siblingsOf(rel);
+  const dirAbs = abs(dir || '.');
+  const i = stems.indexOf(stem);
+  if (i < 0) return rel;
+  if (op === 'up' || op === 'down') {
+    const j = op === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= stems.length) return rel;
+    [stems[i], stems[j]] = [stems[j], stems[i]];
+    await writeOrder(dirAbs, stems);
+    return rel;
+  }
+  if (op === 'indent') {
+    if (i === 0) return rel;
+    const newParent = stems[i - 1];
+    return moveNode(dirAbs, stem, path.posix.join(dir, newParent), path.join(dirAbs, newParent), null);
+  }
+  if (op === 'outdent') {
+    if (!dir) return rel;
+    const parentDir = path.posix.dirname(dir) === '.' ? '' : path.posix.dirname(dir);
+    return moveNode(dirAbs, stem, parentDir, abs(parentDir || '.'), path.posix.basename(dir));
+  }
+  return rel;
+});
+
+async function moveNode(dirAbs, stem, targetRelDir, targetDirAbs, afterStem) {
+  await fs.mkdir(targetDirAbs, { recursive: true });
+  const newStem = await uniqueStem(targetDirAbs, stem);
+  await fs.rename(path.join(dirAbs, stem + '.md'), path.join(targetDirAbs, newStem + '.md'));
+  if (fssync.existsSync(path.join(dirAbs, stem))) {
+    await fs.rename(path.join(dirAbs, stem), path.join(targetDirAbs, newStem));
+  }
+  // Images saved as files are referenced relative to the note's folder; carry them along.
+  const assets = path.join(dirAbs, '_assets');
+  if (fssync.existsSync(assets)) {
+    const mine = (await fs.readdir(assets)).filter((f) => f.startsWith(stem + '-'));
+    if (mine.length) {
+      await fs.mkdir(path.join(targetDirAbs, '_assets'), { recursive: true });
+      for (const f of mine) {
+        await fs.rename(path.join(assets, f), path.join(targetDirAbs, '_assets', f.replace(stem + '-', newStem + '-')));
+      }
+      if (newStem !== stem) {
+        const file = path.join(targetDirAbs, newStem + '.md');
+        const t = await fs.readFile(file, 'utf8');
+        await fs.writeFile(file, t.split(`_assets/${encodeURIComponent(stem)}-`).join(`_assets/${encodeURIComponent(newStem)}-`));
+      }
+    }
+  }
+  const oldOrder = await readOrder(dirAbs);
+  await writeOrder(dirAbs, oldOrder.filter((s) => s !== stem));
+  const { stems } = await siblingsOf(path.posix.join(targetRelDir, newStem + '.md'));
+  const without = stems.filter((s) => s !== newStem);
+  const idx = afterStem ? without.indexOf(afterStem) : -1;
+  if (idx >= 0) without.splice(idx + 1, 0, newStem);
+  else without.push(newStem);
+  await writeOrder(targetDirAbs, without);
+  return path.posix.join(targetRelDir, newStem + '.md');
+}
+
+ipcMain.handle('asset:save', async (_e, { noteRel, bytes, ext }) => {
+  const dirRel = path.posix.dirname(noteRel) === '.' ? '' : path.posix.dirname(noteRel);
+  const stem = path.posix.basename(noteRel, '.md');
+  const assets = abs(path.posix.join(dirRel, '_assets'));
+  await fs.mkdir(assets, { recursive: true });
+  let n = 1;
+  let name;
+  do {
+    name = `${stem}-${n++}.${ext}`;
+  } while (fssync.existsSync(path.join(assets, name)));
+  await fs.writeFile(path.join(assets, name), Buffer.from(bytes));
+  return `_assets/${name}`;
+});
+
+// The renderer tells us whether the theme is dark and whether blur is wanted,
+// so the native material (and menus) match instead of going white.
+ipcMain.handle('window:appearance', (_e, { dark, blur }) => {
+  nativeTheme.themeSource = dark ? 'dark' : 'light';
+  if (win) {
+    try { win.setVibrancy(blur ? 'sidebar' : null); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.handle('shell:open', (_e, url) => shell.openExternal(url));
+ipcMain.handle('shell:reveal', (_e, rel) => shell.showItemInFolder(abs(rel)));
+ipcMain.handle('edit', (_e, op) => {
+  if (win && typeof win.webContents[op] === 'function') win.webContents[op]();
+});
+
+// ---------------------------------------------------------------------------
+// IPC: notebook-wide search
+// ---------------------------------------------------------------------------
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+ipcMain.handle('search:all', async (_e, { query, caseSensitive, regex, titlesOnly }) => {
+  if (!root || !query) return { results: [], total: 0, truncated: false };
+  let re;
+  try {
+    re = new RegExp(regex ? query : escapeRe(query), caseSensitive ? 'g' : 'gi');
+  } catch (err) {
+    return { results: [], total: 0, error: err.message };
+  }
+  const nodes = flatten(await scanDir(''));
+  const results = [];
+  let total = 0;
+  const MAX_TOTAL = 2000;
+  const MAX_PER_FILE = 60;
+  for (const node of nodes) {
+    const hits = [];
+    re.lastIndex = 0;
+    if (re.test(node.title)) hits.push({ line: 0, text: node.title, title: true });
+    if (!titlesOnly) {
+      const text = await fs.readFile(abs(node.rel), 'utf8').catch(() => '');
+      const { body } = parseFrontMatter(text);
+      const lines = body.split('\n');
+      let inCode = false;
+      let fence = null;
+      for (let i = 0; i < lines.length && hits.length < MAX_PER_FILE; i++) {
+        const raw = lines[i];
+        if (!inCode) {
+          const f = /^(`{3,}|~{3,})/.exec(raw);
+          if (f) {
+            inCode = true;
+            fence = f[1];
+            continue;
+          }
+        } else if (raw.trimEnd().startsWith(fence) && /^(`{3,}|~{3,})\s*$/.test(raw)) {
+          inCode = false;
+          continue;
+        }
+        if (raw.startsWith('![') || /^<img\s/i.test(raw)) continue; // embedded image data
+        const plain = inCode ? raw : plainText(raw.replace(/^(#{1,6}|[-*+]|\d{1,9}\.) /, ''));
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(plain)) && hits.length < MAX_PER_FILE) {
+          if (m[0] === '') {
+            re.lastIndex++;
+            continue;
+          }
+          const start = Math.max(0, m.index - 40);
+          hits.push({
+            line: i + 1,
+            text: (start > 0 ? '…' : '') + plain.slice(start, m.index + m[0].length + 60),
+            match: m[0],
+            col: m.index - start + (start > 0 ? 1 : 0),
+          });
+        }
+      }
+    }
+    if (hits.length) {
+      results.push({ rel: node.rel, title: node.title, hits });
+      total += hits.length;
+      if (total >= MAX_TOTAL) return { results, total, truncated: true };
+    }
+  }
+  return { results, total, truncated: false };
+});
+
+// ---------------------------------------------------------------------------
+// Settings window. Changes preview live in the notebook window and are
+// written to disk only on Save; closing the window drops the preview.
+// ---------------------------------------------------------------------------
+
+const UI_SETTING_KEYS = ['theme', 'customTheme', 'nodeIcons', 'windowAlpha', 'iconColors', 'blur', 'imageStorage', 'keys', 'hotkeys', 'spellcheck', 'mdTyping', 'colorCarry'];
+let settingsWin = null;
+let keysSuspended = false;
+
+function applySettingsPatch(patch) {
+  const s = saveSettings(patch);
+  if ('spellcheck' in patch) session.defaultSession.setSpellCheckerEnabled(s.spellcheck !== false);
+  if (['theme', 'keys', 'hotkeys', 'spellcheck', 'mdTyping', 'quitKey', 'closeKey'].some((k) => k in patch)) {
+    try { buildMenu(); } catch (err) { console.error('menu failed to build:', err); }
+  }
+  if (UI_SETTING_KEYS.some((k) => k in patch)) {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('settings-changed', s);
+  }
+  return s;
+}
+
+function openSettingsWindow(section) {
+  if (settingsWin) {
+    settingsWin.focus();
+    if (section) settingsWin.webContents.send('settings-section', section);
+    return;
+  }
+  const width = 780;
+  const height = 640;
+  const pb = win ? win.getBounds() : null;
+  settingsWin = new BrowserWindow({
+    width,
+    height,
+    minWidth: 640,
+    minHeight: 480,
+    x: pb ? Math.round(pb.x + (pb.width - width) / 2) : undefined,
+    y: pb ? Math.round(pb.y + (pb.height - height) / 2) : undefined,
+    title: 'Settings',
+    show: false,
+    backgroundColor: '#1e1e22',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 14 },
+    fullscreenable: false,
+    minimizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+  });
+  settingsWin.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'), { query: section ? { section } : {} });
+  settingsWin.once('ready-to-show', () => settingsWin?.show());
+  settingsWin.on('closed', () => {
+    settingsWin = null;
+    if (keysSuspended) {
+      keysSuspended = false;
+      buildMenu();
+    }
+    send('settings-revert'); // drop any un-saved live preview
+  });
+}
+
+ipcMain.handle('settings:open', (_e, section) => openSettingsWindow(section));
+ipcMain.handle('settings:close', () => settingsWin?.close());
+ipcMain.on('settings:preview', (_e, patch) => send('settings-preview', patch));
+ipcMain.on('keys:suspend', (_e, on) => {
+  if (keysSuspended === !!on) return;
+  keysSuspended = !!on;
+  try { buildMenu(); } catch (err) { console.error('menu failed to build:', err); }
+});
+
+// ---------------------------------------------------------------------------
+// Export: a node and its subtree as plain, readable Markdown
+// ---------------------------------------------------------------------------
+
+const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
+
+// Strip Note4Me's inline HTML (colours, underline, sized images), drop the
+// code-box height hint, and move images into files next to the document.
+async function readableMarkdown(text, { title, srcDirAbs, outDirAbs, stem }) {
+  const { body } = parseFrontMatter(text);
+  let n = 0;
+  const saveImage = async (src) => {
+    const assets = path.join(outDirAbs, 'assets');
+    await fs.mkdir(assets, { recursive: true });
+    n += 1;
+    const m = /^data:(image\/[a-z0-9+.-]+);base64,(.*)$/is.exec(src);
+    let name = null;
+    if (m) {
+      name = `${stem}-${n}.${MIME_EXT[m[1].toLowerCase()] || 'bin'}`;
+      await fs.writeFile(path.join(assets, name), Buffer.from(m[2], 'base64'));
+    } else if (!/^[a-z]+:/i.test(src)) {
+      const from = path.join(srcDirAbs, decodeURIComponent(src));
+      name = `${stem}-${n}${path.extname(from)}`;
+      await fs.copyFile(from, path.join(assets, name)).catch(() => { name = null; });
+    }
+    return name ? `![](assets/${encodeURIComponent(name)})` : `![](${src})`;
+  };
+  const out = [];
+  let inFence = false;
+  for (let line of body.split('\n')) {
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      out.push(line.replace(/\s+h=\d+\s*$/, ''));
+      continue;
+    }
+    if (inFence) { out.push(line); continue; }
+    const img = /^\s*(?:!\[[^\]]*\]\(([^)]+)\)|<img\s[^>]*src="([^"]+)"[^>]*>)\s*$/i.exec(line);
+    if (img) { out.push(await saveImage(img[1] || img[2])); continue; }
+    let prev;
+    do {
+      prev = line;
+      line = line.replace(/<span\s+style="[^"]*">([\s\S]*?)<\/span>/gi, '$1').replace(/<u>([\s\S]*?)<\/u>/gi, '$1');
+    } while (line !== prev);
+    out.push(line);
+  }
+  return `# ${title}\n\n${out.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+}
+
+ipcMain.handle('export:markdown', async (_e, rel) => {
+  if (!root || !win) return { error: 'No notebook open.' };
+  const node = flatten(await scanDir('')).find((n) => n.rel === rel);
+  if (!node) return { error: 'Node not found.' };
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Export as Markdown',
+    message: `Choose a folder for "${node.title}" and its child notes`,
+    buttonLabel: 'Export Here',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled || !filePaths[0]) return { canceled: true };
+  const dest = filePaths[0];
+  let count = 0;
+  const walk = async (n, outDirAbs) => {
+    const stem = path.posix.basename(n.rel, '.md');
+    const text = await fs.readFile(abs(n.rel), 'utf8').catch(() => '');
+    const md = await readableMarkdown(text, { title: n.title, srcDirAbs: path.dirname(abs(n.rel)), outDirAbs, stem });
+    await fs.mkdir(outDirAbs, { recursive: true });
+    await fs.writeFile(path.join(outDirAbs, stem + '.md'), md, 'utf8');
+    count += 1;
+    for (const c of n.children || []) await walk(c, path.join(outDirAbs, stem));
+  };
+  try {
+    await walk(node, dest);
+  } catch (err) {
+    return { error: err.message };
+  }
+  const { response } = await dialog.showMessageBox(win, {
+    message: `Exported ${count} note${count === 1 ? '' : 's'} as Markdown.`,
+    detail: dest,
+    buttons: ['Show in Finder', 'OK'],
+    defaultId: 1,
+  });
+  if (response === 0) shell.showItemInFolder(path.join(dest, path.posix.basename(rel, '.md') + '.md'));
+  return { count, dest };
+});
+
+// ---------------------------------------------------------------------------
+// Window / protocol / menu
+// ---------------------------------------------------------------------------
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'nb', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
+
+function createWindow() {
+  const s = loadSettings();
+  win = new BrowserWindow({
+    width: s.width || 1400,
+    height: s.height || 900,
+    minWidth: 700,
+    minHeight: 400,
+    title: 'Note4Me',
+    show: !process.env.NOTE4ME_HIDDEN, // NOTE4ME_HIDDEN=1: headless checks without a window
+    // A truly transparent window: with blur on, macOS draws a frosted material
+    // behind the page; with blur off, the desktop shows through sharply.
+    transparent: true,
+    backgroundColor: '#00000000',
+    vibrancy: s.blur === true ? 'sidebar' : undefined,
+    visualEffectState: 'active',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 14 },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: true,
+    },
+  });
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  win.webContents.on('context-menu', (_e, params) => showContextMenu(params));
+  // Headless screenshot for development: NOTE4ME_SHOT=/path/out.png
+  if (process.env.NOTE4ME_SHOT) {
+    win.webContents.on('console-message', (_e, level, message) => {
+      if (level >= 2) console.log(`[renderer] ${message}`);
+    });
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        // NOTE4ME_SHOT_JS: optional script to drive the UI before the capture
+        if (process.env.NOTE4ME_SHOT_JS) {
+          const r = await win.webContents.executeJavaScript(process.env.NOTE4ME_SHOT_JS).catch((e) => console.log('shot js failed:', e.message));
+          if (r !== undefined) console.log('shot js:', JSON.stringify(r));
+          await new Promise((r) => setTimeout(r, 900));
+        }
+        const img = await win.capturePage();
+        fssync.writeFileSync(process.env.NOTE4ME_SHOT, img.toPNG());
+        app.exit(0);
+      }, Number(process.env.NOTE4ME_SHOT_DELAY || 2500));
+    });
+  }
+  win.on('resize', () => {
+    const [width, height] = win.getSize();
+    saveSettings({ width, height });
+  });
+  // Save the open note before the window closes or the app quits. A
+  // prevented close would otherwise cancel a quit, so both paths share this.
+  win.flushed = false;
+  win.on('close', (e) => {
+    if (win.flushed) return;
+    e.preventDefault();
+    flushThen(() => win && win.close());
+  });
+  win.on('closed', () => {
+    if (process.env.NOTE4ME_SHOT) console.log('window closed', new Error().stack);
+    win = null;
+  });
+}
+
+function send(channel, ...args) {
+  if (win) win.webContents.send(channel, ...args);
+}
+
+// Right-click menu for the editor and the other text fields. Electron shows
+// nothing on its own, so spelling suggestions, clipboard commands and the
+// formatting shortcuts all live here. The tree draws its own HTML menu and
+// swallows the event before it reaches this handler.
+function showContextMenu(p) {
+  if (!win) return;
+  const wc = win.webContents;
+  const items = [];
+  const sep = () => {
+    if (items.length && items[items.length - 1].type !== 'separator') items.push({ type: 'separator' });
+  };
+  // the note body is a contenteditable, not a form control like the search box
+  const inEditor = p.isEditable && p.formControlType === 'none';
+
+  if (p.misspelledWord) {
+    const guesses = (p.dictionarySuggestions || []).slice(0, 6);
+    if (guesses.length) for (const g of guesses) items.push({ label: g, click: () => wc.replaceMisspelling(g) });
+    else items.push({ label: 'No Guesses Found', enabled: false });
+    sep();
+    items.push({
+      label: 'Add to Dictionary',
+      click: () => session.defaultSession.addWordToSpellCheckerDictionary(p.misspelledWord),
+    });
+    sep();
+  }
+  if (p.linkURL) {
+    items.push({ label: 'Open Link', click: () => shell.openExternal(p.linkURL) });
+    items.push({ label: 'Copy Link', click: () => clipboard.writeText(p.linkURL) });
+    sep();
+  }
+  if (p.hasImageContents) {
+    items.push({ label: 'Copy Image', click: () => wc.copyImageAt(p.x, p.y) });
+    sep();
+  }
+  const selected = (p.selectionText || '').trim();
+  if (selected && process.platform === 'darwin') {
+    const short = selected.length > 24 ? selected.slice(0, 24) + '…' : selected;
+    items.push({ label: `Look Up “${short}”`, click: () => wc.showDefinitionForSelection() });
+    sep();
+  }
+  const f = p.editFlags || {};
+  if (inEditor) {
+    items.push({ label: 'Undo', click: () => send('cmd', 'undo') });
+    items.push({ label: 'Redo', click: () => send('cmd', 'redo') });
+    sep();
+  } else if (p.isEditable) {
+    items.push({ label: 'Undo', enabled: !!f.canUndo, click: () => wc.undo() });
+    items.push({ label: 'Redo', enabled: !!f.canRedo, click: () => wc.redo() });
+    sep();
+  }
+  if (p.isEditable || f.canCopy) {
+    items.push({ label: 'Cut', enabled: !!f.canCut, click: () => wc.cut() });
+    items.push({ label: 'Copy', enabled: !!f.canCopy, click: () => wc.copy() });
+    if (p.isEditable) {
+      items.push({ label: 'Paste', enabled: !!f.canPaste, click: () => wc.paste() });
+      items.push({ label: 'Paste Without Formatting', enabled: !!f.canPaste, click: () => wc.pasteAndMatchStyle() });
+    }
+    items.push({ label: 'Select All', enabled: f.canSelectAll !== false, click: () => wc.selectAll() });
+  }
+  if (inEditor) {
+    sep();
+    items.push({
+      label: 'Format',
+      submenu: [
+        { label: 'Bold', click: () => send('cmd', 'bold') },
+        { label: 'Italic', click: () => send('cmd', 'italic') },
+        { label: 'Underline', click: () => send('cmd', 'underline') },
+        { label: 'Strikethrough', click: () => send('cmd', 'strike') },
+        { label: 'Monospace', click: () => send('cmd', 'code') },
+        { type: 'separator' },
+        { label: 'Foreground Color…', click: () => send('cmd', 'fg') },
+        { label: 'Background Color…', click: () => send('cmd', 'bg') },
+        { label: 'Clear Formatting', click: () => send('cmd', 'clear') },
+        { type: 'separator' },
+        { label: 'Bullet List', click: () => send('cmd', 'bullets') },
+        { label: 'Numbered List', click: () => send('cmd', 'numbers') },
+        { label: 'Code Box', click: () => send('cmd', 'codeblock') },
+      ],
+    });
+  }
+  while (items.length && items[items.length - 1].type === 'separator') items.pop();
+  if (!items.length) return;
+  Menu.buildFromTemplate(items).popup({ window: win });
+}
+
+let flushing = false;
+function flushThen(fn) {
+  if (!win || win.flushed) return fn();
+  if (flushing) return;
+  flushing = true;
+  const done = () => {
+    if (!flushing) return;
+    flushing = false;
+    if (win) win.flushed = true;
+    fn();
+  };
+  ipcMain.once('flushed', done);
+  setTimeout(done, 1500);
+  send('flush');
+}
+
+app.on('before-quit', (e) => {
+  if (win && !win.flushed) {
+    e.preventDefault();
+    flushThen(() => app.quit());
+  }
+});
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const settings = loadSettings();
+  const theme = settings.theme || 'modern-dark';
+  const K = resolveKeys(settings);
+  // settings.hotkeys === false turns every app shortcut off (the standard
+  // macOS editing keys and the Quit/Close keys stay). While the settings
+  // window is recording a shortcut none may fire, otherwise pressing the keys
+  // you want to assign runs the old command. Role items get their default key
+  // back whenever the accelerator is undefined, so "no key" must be '' here.
+  const hotkeysOn = settings.hotkeys !== false;
+  const acc = (id) => (keysSuspended || !hotkeysOn ? '' : K[id] || '');
+  const item = (id, label, click) => ({ label, accelerator: acc(id), click: click || (() => send('cmd', id)) });
+  // Native roles keep their default keys unless a configured shortcut takes one.
+  const taken = new Set(Object.values(K).filter(Boolean).map(normalizeAccelerator));
+  const roleAcc = (def) => {
+    if (keysSuspended) return '';
+    const n = normalizeAccelerator(def);
+    return taken.has(n) ? n.replace('CmdOrCtrl', 'Ctrl') : n;
+  };
+  const role = (r, def) => ({ role: r, accelerator: def ? roleAcc(def) : '' });
+  const wc = () => BrowserWindow.getFocusedWindow()?.webContents;
+  // Quit and Close follow the user's key even with hotkeys off; a cleared key means none.
+  const quitItem = { role: 'quit', accelerator: keysSuspended ? '' : K.quit || '' };
+  const closeItem = { role: 'close', accelerator: keysSuspended ? '' : K.close || '' };
+  const template = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            item('settings', 'Settings…', () => openSettingsWindow()),
+            { type: 'separator' },
+            { role: 'services' }, { type: 'separator' }, role('hide', 'Cmd+H'), role('hideOthers', 'Cmd+Alt+H'), { role: 'unhide' },
+            { type: 'separator' }, quitItem,
+          ],
+        }]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        item('open-notebook', 'Open Notebook…'),
+        item('new-notebook', 'New Notebook…'),
+        { type: 'separator' },
+        item('new-sibling', 'New Node (same level)'),
+        item('new-child', 'New Child Node'),
+        item('rename', 'Rename Node'),
+        item('delete', 'Delete Node'),
+        { type: 'separator' },
+        item('reveal', 'Reveal in Finder'),
+        item('export-md', 'Export as Markdown…'),
+        ...(isMac ? [] : [item('settings', 'Settings…', () => openSettingsWindow())]),
+        { type: 'separator' },
+        isMac ? closeItem : quitItem,
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        role('undo', 'CmdOrCtrl+Z'), role('redo', 'CmdOrCtrl+Shift+Z'), { type: 'separator' },
+        role('cut', 'CmdOrCtrl+X'), role('copy', 'CmdOrCtrl+C'), role('paste', 'CmdOrCtrl+V'),
+        item('paste-plain', 'Paste Without Formatting', () => wc()?.pasteAndMatchStyle()),
+        role('selectAll', 'CmdOrCtrl+A'),
+        {
+          label: 'Linux-Style Shortcuts',
+          submenu: [
+            item('linux-undo', 'Undo', () => send('cmd', 'undo')),
+            item('linux-redo', 'Redo', () => send('cmd', 'redo')),
+            item('linux-redo-alt', 'Redo (Shift)', () => send('cmd', 'redo')),
+            { type: 'separator' },
+            item('linux-copy', 'Copy', () => wc()?.copy()),
+            item('linux-cut', 'Cut', () => wc()?.cut()),
+            item('linux-paste', 'Paste', () => wc()?.paste()),
+            item('linux-paste-plain', 'Paste Without Formatting', () => wc()?.pasteAndMatchStyle()),
+            item('linux-select-all', 'Select All', () => wc()?.selectAll()),
+          ],
+        },
+        {
+          label: 'Selection',
+          submenu: [
+            item('select-word-right', 'Select Next Word'),
+            item('select-word-left', 'Select Previous Word'),
+            item('select-line-end', 'Select to End of Line'),
+            item('select-line-start', 'Select to Start of Line'),
+          ],
+        },
+        { type: 'separator' },
+        {
+          label: 'Check Spelling While Typing',
+          type: 'checkbox',
+          checked: settings.spellcheck !== false,
+          click: (mi) => applySettingsPatch({ spellcheck: mi.checked }),
+        },
+        { type: 'separator' },
+        item('find', 'Find in Note'),
+        item('replace', 'Find and Replace in Note'),
+        item('search', 'Search All Notes'),
+      ],
+    },
+    {
+      label: 'Format',
+      submenu: [
+        item('bold', 'Bold'), item('italic', 'Italic'), item('underline', 'Underline'), item('strike', 'Strikethrough'), item('code', 'Monospace'),
+        { type: 'separator' },
+        item('fg', 'Text Color…'), item('bg', 'Highlight Color…'), item('fg-again', 'Apply Last Text Color'), item('bg-again', 'Apply Last Highlight'), item('clear', 'Clear Formatting'),
+        { type: 'separator' },
+        item('bullets', 'Bullet List'), item('numbers', 'Numbered List'),
+        { type: 'separator' },
+        item('codeblock', 'Insert Code Box'),
+        { type: 'separator' },
+        {
+          label: 'Paragraph Style',
+          submenu: [item('para', 'Normal Text'), item('h1', 'Heading 1'), item('h2', 'Heading 2'), item('h3', 'Heading 3')],
+        },
+        { type: 'separator' },
+        {
+          label: 'Markdown While Typing',
+          type: 'checkbox',
+          checked: settings.mdTyping !== false,
+          accelerator: acc('md-typing'),
+          click: (mi) => applySettingsPatch({ mdTyping: mi.checked }),
+        },
+      ],
+    },
+    {
+      label: 'Tree',
+      submenu: [
+        item('move-up', 'Move Node Up'), item('move-down', 'Move Node Down'),
+        item('indent', 'Indent Node (make child of previous)'), item('outdent', 'Outdent Node'),
+        { type: 'separator' },
+        item('prev-node', 'Previous Node'), item('next-node', 'Next Node'),
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        item('zoom-in', 'Bigger Text'), item('zoom-out', 'Smaller Text'), item('zoom-reset', 'Reset Text Size'),
+        { type: 'separator' },
+        {
+          label: 'Theme',
+          submenu: THEMES.map(([id, label]) => ({
+            label,
+            type: 'radio',
+            checked: id === theme,
+            click: () => send('cmd', `theme:${id}`),
+          })),
+        },
+        item('toggle-tree', 'Toggle Tree'),
+        { type: 'separator' },
+        role('reload', 'CmdOrCtrl+R'), role('toggleDevTools', 'Alt+CmdOrCtrl+I'), { type: 'separator' }, role('togglefullscreen', 'Ctrl+CmdOrCtrl+F'),
+      ],
+    },
+    {
+      role: 'window',
+      submenu: [
+        role('minimize', 'CmdOrCtrl+M'), { role: 'zoom' },
+        ...(isMac ? [{ type: 'separator' }, { role: 'front' }] : [closeItem]),
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+app.whenReady().then(() => {
+  protocol.handle('nb', (request) => {
+    try {
+      const u = new URL(request.url);
+      const rel = decodeURIComponent(u.pathname.replace(/^\//, ''));
+      return net.fetch(pathToFileURL(abs(rel)).toString());
+    } catch {
+      return new Response('not found', { status: 404 });
+    }
+  });
+  const s = loadSettings();
+  session.defaultSession.setSpellCheckerEnabled(s.spellcheck !== false);
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(path.join(__dirname, '..', 'assets', 'icon.png')); } catch { /* ignore */ }
+  }
+  try {
+    buildMenu();
+  } catch (err) {
+    console.error('menu failed to build:', err);
+  }
+  createWindow();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});

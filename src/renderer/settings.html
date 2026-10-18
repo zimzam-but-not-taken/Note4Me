@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en" data-theme="modern-dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:;" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body class="settings">
+  <div id="s-head"><span id="s-title">Settings</span></div>
+
+  <div id="s-body">
+    <nav id="s-nav">
+      <button data-section="appearance" class="active">Appearance</button>
+      <button data-section="editor">Editor</button>
+      <button data-section="keyboard">Keyboard</button>
+    </nav>
+
+    <main id="s-main">
+      <section id="sec-appearance" class="sec active">
+        <h2>Appearance</h2>
+
+        <div class="group">
+          <div class="group-title">Theme</div>
+          <div id="theme-grid" class="tiles"></div>
+          <div id="custom-block" hidden>
+            <div class="row"><label for="c-base">Start from</label><select id="c-base"></select></div>
+            <div class="row"><label for="c-var">Colour</label>
+              <div class="color-edit">
+                <select id="c-var"></select>
+                <input type="color" id="c-color" />
+                <input type="text" id="c-hex" placeholder="theme default" spellcheck="false" autocomplete="off" />
+                <button id="c-reset" type="button" title="Back to the base theme's colour">Reset</button>
+              </div>
+            </div>
+            <div class="row"><span></span><div id="c-chips" class="chips"></div></div>
+            <div class="row"><span></span><span class="hint">Pick a colour to change, then adjust it. Changed colours are listed above; click one to edit it again, or its × to drop it.</span></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">Window</div>
+          <div class="row"><label for="s-alpha">See-through</label>
+            <div class="slider"><input id="s-alpha" type="range" min="0" max="100" step="5" /><span class="val" id="s-alpha-val"></span></div></div>
+          <div class="row"><span></span><label class="check"><input type="checkbox" id="s-blur" /> Blur what shows through (frosted glass)</label></div>
+          <div class="row"><span></span><span class="hint">0% is solid. Higher lets the desktop show through the window, blurred or clear.</span></div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">Tree icons</div>
+          <div id="icon-grid" class="tiles icons"></div>
+          <div class="row"><label>Colours</label>
+            <div class="swatches"><span id="icon-colors"></span><button id="icon-colors-reset" type="button">Reset</button></div></div>
+          <div class="row"><span></span><span class="hint">One colour per level of the tree, top level first, repeating deeper down.</span></div>
+        </div>
+      </section>
+
+      <section id="sec-editor" class="sec">
+        <h2>Editor</h2>
+        <div class="group">
+          <div class="group-title">Writing</div>
+          <div class="row"><span></span><label class="check"><input type="checkbox" id="s-spell" /> Check spelling while typing</label></div>
+          <div class="row"><span></span><span class="hint">Misspelled words get a red underline; right-click one for suggestions.</span></div>
+          <div class="row"><span></span><label class="check"><input type="checkbox" id="s-md" /> Markdown while typing</label></div>
+          <div class="row"><span></span><span class="hint">Typing <code>**bold**</code>, <code>*italic*</code>, <code>`code`</code>, <code>~~strike~~</code> or <code>```</code> formats as you go, pasted plain text is read as Markdown, and labels like <code>[GOAL]</code> are tinted. On by default; turn it off for notes full of shell commands and regexes. Lists (<code>- </code>, <code>1. </code>) always work. Also in the Format menu.</span></div>
+          <div class="row"><span></span><label class="check"><input type="checkbox" id="s-colorcarry" /> Colour carries on while typing</label></div>
+          <div class="row"><span></span><span class="hint">Off: text typed after coloured or highlighted text, or on the next line, is back to normal. Typing inside a coloured word keeps its colour, and a colour picked with nothing selected applies to what you type next until the caret moves. On: the colour continues until you change it.</span></div>
+        </div>
+        <div class="group">
+          <div class="group-title">Images</div>
+          <div class="row"><label for="s-images">Pasted images</label>
+            <select id="s-images">
+              <option value="embed">Embed inside the note</option>
+              <option value="assets">Save as files in _assets/</option>
+            </select></div>
+          <div class="row"><span></span><span class="hint">Embedded images keep a note self-contained. Files keep notes small and readable in other editors.</span></div>
+        </div>
+      </section>
+
+      <section id="sec-keyboard" class="sec">
+        <h2>Keyboard</h2>
+        <div class="group">
+          <div class="row"><span></span><label class="check"><input type="checkbox" id="keys-on" /> Enable keyboard shortcuts</label></div>
+          <div class="row"><span></span><span class="hint">Off turns every shortcut below off at once. The standard macOS keys (⌘C, ⌘V, ⌘Z, ⌘A, ⌘Q, ⌘W) keep working. To drop a single shortcut, click it and press Backspace.</span></div>
+        </div>
+        <div class="row keys-head">
+          <span class="hint">Click a shortcut and press the new keys. Backspace clears it, Esc keeps the old one. A combination used twice is marked in red.</span>
+          <button id="keys-defaults" type="button">Restore all defaults</button>
+        </div>
+        <div id="keys"></div>
+      </section>
+    </main>
+  </div>
+
+  <footer id="s-foot">
+    <span class="hint">Changes preview live in the notebook window. ↩ saves, Esc cancels.</span>
+    <button id="s-cancel" type="button">Cancel</button>
+    <button id="s-save" type="button" class="primary">Save</button>
+  </footer>
+
+  <script src="../../dist/settings.js"></script>
+</body>
+</html>

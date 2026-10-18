@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en" data-theme="modern-dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' nb: data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:;" />
+  <title>Note4Me</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-chevron" viewBox="0 0 24 24"><polyline points="9 5 16 12 9 19"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-olist" viewBox="0 0 24 24"><line x1="10" y1="6" x2="20" y2="6"/><line x1="10" y1="12" x2="20" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/><path d="M4 7.5V4l-1 .8"/><path d="M3 11.2c.3-.5 2.2-.7 2.2.6 0 1-2.2 1.6-2.2 2.7h2.3"/><path d="M3 16.5h2.1l-1.1 1.3c.9 0 1.5.4 1.5 1.1 0 .9-1.5 1.3-2.5.6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M20 20H8.5L3.6 15.1a2 2 0 0 1 0-2.8l8.5-8.5a2 2 0 0 1 2.8 0l5.7 5.7a2 2 0 0 1 0 2.8L13 20"/><line x1="7" y1="10.5" x2="13.5" y2="17"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9" y1="4" x2="9" y2="20"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></symbol>
+  </svg>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-drag"></div>
+      <div id="tree-tools">
+        <div class="search-row">
+          <input id="search-input" type="search" placeholder="Search notes" spellcheck="false" />
+          <button id="search-close" title="Clear (Esc)" hidden><svg class="ic"><use href="#i-close"/></svg></button>
+        </div>
+        <div class="search-opts" id="search-opts" hidden>
+          <label title="Match case"><input type="checkbox" id="search-case" /> Aa</label>
+          <label title="Regular expression"><input type="checkbox" id="search-regex" /> .*</label>
+          <label title="Filter the tree by node title instead of searching contents"><input type="checkbox" id="search-titles" /> titles</label>
+          <span id="search-status"></span>
+        </div>
+      </div>
+      <div id="tree" tabindex="0"></div>
+      <div id="search-panel" hidden>
+        <div id="search-results"></div>
+      </div>
+    </aside>
+    <div id="splitter"></div>
+    <main id="main">
+      <div id="topbar">
+        <div id="toolbar">
+          <button data-cmd="toggle-tree" id="btn-tree" title="Show/hide the tree (⌘\)"><svg class="ic"><use href="#i-sidebar"/></svg></button>
+          <span class="tb-group">
+            <span class="sep"></span>
+            <select id="pstyle" title="Paragraph style"><option value="0">Text</option><option value="1">Heading 1</option><option value="2">Heading 2</option><option value="3">Heading 3</option><option value="4">Heading 4</option></select>
+            <button data-cmd="bold" title="Bold (⌘B)"><span class="glyph">B</span></button>
+            <button data-cmd="italic" title="Italic (⌘I)"><span class="glyph"><i>I</i></span></button>
+            <button data-cmd="underline" title="Underline (⌘U)"><span class="glyph"><u>U</u></span></button>
+            <button data-cmd="strike" title="Strikethrough (⇧⌘X)"><span class="glyph"><s>S</s></span></button>
+            <button data-cmd="code" title="Monospace (⌘E)"><span class="glyph" style="font-family: var(--mono-font)">m</span></button>
+          </span>
+          <span class="tb-group">
+            <span class="sep"></span>
+            <button data-cmd="fg" id="btn-fg" title="Text color (⇧⌥F)"><span class="swatch-a">A</span></button>
+            <button data-cmd="bg" id="btn-bg" title="Highlight color (⇧⌥B)"><span class="swatch-bg">A</span></button>
+            <button data-cmd="clear" title="Clear formatting (⇧⌘\)"><svg class="ic"><use href="#i-eraser"/></svg></button>
+          </span>
+          <span class="tb-group">
+            <span class="sep"></span>
+            <button data-cmd="bullets" title="Bullet list (⇧⌘8)"><svg class="ic"><use href="#i-list"/></svg></button>
+            <button data-cmd="numbers" title="Numbered list (⇧⌘7)"><svg class="ic"><use href="#i-olist"/></svg></button>
+          </span>
+          <span class="tb-group">
+            <span class="sep"></span>
+            <button data-cmd="codeblock" title="Code box (⇧⌥⌘C)"><svg class="ic"><use href="#i-code"/></svg></button>
+            <select id="lang" title="Code box language"></select>
+          </span>
+          <span class="tb-group">
+            <span class="sep"></span>
+            <button data-cmd="zoom-out" title="Smaller text (⌘-)"><span class="zoom-small">A</span></button>
+            <button data-cmd="zoom-in" title="Bigger text (⌘=)"><span class="zoom-big">A</span></button>
+          </span>
+          <button id="btn-more" title="More tools" hidden><svg class="ic"><use href="#i-more"/></svg></button>
+          <span class="spacer"></span>
+          <span id="status-save" class="status"></span>
+          <button data-cmd="settings" title="Settings (⌘,)"><svg class="ic"><use href="#i-gear"/></svg></button>
+        </div>
+      </div>
+      <div id="find-bar" hidden>
+        <input id="find-input" type="search" placeholder="Find in note" spellcheck="false" />
+        <span id="find-count"></span>
+        <button id="find-prev" title="Previous">↑</button>
+        <button id="find-next" title="Next">↓</button>
+        <button id="find-close" title="Close"><svg class="ic"><use href="#i-close"/></svg></button>
+        <div id="replace-row">
+          <input id="replace-input" type="text" placeholder="Replace with" spellcheck="false" />
+          <button id="replace-one" title="Replace this match (Enter)">Replace</button>
+          <button id="replace-all" title="Replace every match (⌘Enter)">All</button>
+          <label id="replace-drop-label" title="When a replacement leaves a line empty, remove the line too"><input type="checkbox" id="replace-drop" /> Drop emptied lines</label>
+        </div>
+      </div>
+      <div id="editor-wrap">
+        <div id="editor"></div>
+        <div id="welcome" hidden>
+          <h1>Note4Me</h1>
+          <p>A tree of notes, stored as plain Markdown.</p>
+          <div class="welcome-actions">
+            <button id="w-open">Open Notebook Folder…</button>
+            <button id="w-new">Create New Notebook…</button>
+          </div>
+          <p class="hint">Converting from CherryTree? Run <code>python3 tools/ctb2md.py Notebook.ctb ~/Notes/Notebook</code> and open that folder.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="palette" class="popover" hidden>
+    <div class="palette-grid"></div>
+    <div class="palette-row">
+      <input type="color" id="palette-custom" />
+      <button id="palette-none">None</button>
+    </div>
+  </div>
+
+  <div id="tb-overflow" class="popover" hidden></div>
+
+  <div id="ctx-menu" class="popover" hidden>
+    <button data-act="new-child">New Child Node</button>
+    <button data-act="new-sibling">New Sibling Node</button>
+    <button data-act="rename">Rename…</button>
+    <hr />
+    <button data-act="move-up">Move Up</button>
+    <button data-act="move-down">Move Down</button>
+    <button data-act="indent">Indent (make child of previous)</button>
+    <button data-act="outdent">Outdent</button>
+    <hr />
+    <button data-act="reveal">Reveal in Finder</button>
+    <button data-act="export-md">Export as Markdown…</button>
+    <button data-act="delete" class="danger">Delete…</button>
+  </div>
+
+  <script src="../../dist/app.js"></script>
+</body>
+</html>
