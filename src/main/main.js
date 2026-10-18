@@ -364,14 +364,19 @@ async function moveNode(dirAbs, stem, targetRelDir, targetDirAbs, afterStem) {
 ipcMain.handle('asset:save', async (_e, { noteRel, bytes, ext }) => {
   const dirRel = path.posix.dirname(noteRel) === '.' ? '' : path.posix.dirname(noteRel);
   const stem = path.posix.basename(noteRel, '.md');
-  const assets = abs(path.posix.join(dirRel, '_assets'));
-  await fs.mkdir(assets, { recursive: true });
+  // `ext` is renderer-supplied (from a pasted file's MIME type); keep it to a
+  // plain extension so it can't smuggle path separators into the filename.
+  const safeExt = /^[a-z0-9]{1,8}$/i.test(ext) ? ext.toLowerCase() : 'png';
+  await fs.mkdir(abs(path.posix.join(dirRel, '_assets')), { recursive: true });
+  // Resolve every candidate through abs(), so the final write can never land
+  // outside the notebook even if the stem or extension is unexpected.
+  const relFor = (name) => abs(path.posix.join(dirRel, '_assets', name));
   let n = 1;
   let name;
   do {
-    name = `${stem}-${n++}.${ext}`;
-  } while (fssync.existsSync(path.join(assets, name)));
-  await fs.writeFile(path.join(assets, name), Buffer.from(bytes));
+    name = `${stem}-${n++}.${safeExt}`;
+  } while (fssync.existsSync(relFor(name)));
+  await fs.writeFile(relFor(name), Buffer.from(bytes));
   return `_assets/${name}`;
 });
 
@@ -386,9 +391,6 @@ ipcMain.handle('window:appearance', (_e, { dark, blur }) => {
 
 ipcMain.handle('shell:open', (_e, url) => shell.openExternal(url));
 ipcMain.handle('shell:reveal', (_e, rel) => shell.showItemInFolder(abs(rel)));
-ipcMain.handle('edit', (_e, op) => {
-  if (win && typeof win.webContents[op] === 'function') win.webContents[op]();
-});
 
 // ---------------------------------------------------------------------------
 // IPC: notebook-wide search

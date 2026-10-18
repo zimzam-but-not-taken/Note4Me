@@ -33,7 +33,6 @@ contextBridge.exposeInMainWorld('api', {
     open: (url) => ipcRenderer.invoke('shell:open', url),
     reveal: (rel) => ipcRenderer.invoke('shell:reveal', rel),
   },
-  edit: (op) => ipcRenderer.invoke('edit', op),
   appearance: (opts) => ipcRenderer.invoke('window:appearance', opts),
   search: (opts) => ipcRenderer.invoke('search:all', opts),
   onCommand: (fn) => ipcRenderer.on('cmd', (_e, name) => fn(name)),
