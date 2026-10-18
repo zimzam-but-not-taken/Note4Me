@@ -4,16 +4,20 @@
 
 ![Note4Me: a node tree on the left, a note with coloured text and highlighted ARM64 code boxes on the right](Screenshot.png)
 
-I kept years of pentesting notes in CherryTree. It's a great way to write
-this kind of thing: a tree of nodes, colour wherever you want it, proper code
-boxes with syntax highlighting, and it never gets in your way. The problem is
-that all of it lives in a single SQLite file only CherryTree can read, the
-Mac build is a bit of a stranger on macOS, and I didn't love betting a decade
-of notes on one project staying alive.
+CherryTree is very old, and it is amazing software. It has been around since
+2009, long before "second brain" was a phrase, and it quietly got the hard
+parts right: a tree of nodes, colour anywhere you want it, real code boxes
+with syntax highlighting, and an editor that never gets in the way. A lot of
+pentesters and sysadmins have a decade of notes in it for good reason.
 
-Markdown is king. Files in a folder outlive any app, they diff, they grep, and
-they open in Obsidian, VS Code, or GitHub. But Markdown-only notes suck for
-notes like these. There's no text colour or highlight. There's no real tree,
+The catch is where those notes live. Everything sits in one SQLite file that
+only CherryTree can read, the Mac build has always been a bit of a stranger on
+macOS, and a decade of notes is a lot to bet on any single project staying
+alive.
+
+Markdown is king. Files in a folder outlive any app, they diff, they grep,
+and they open in Obsidian, VS Code or GitHub. But Markdown-only notes suck for
+notes like these. There is no text colour or highlight. There is no real tree,
 just folders. Every `*`, `_` and `#` inside a shell command picks a fight with
 the syntax, and a code box is three backticks and a prayer.
 
@@ -26,7 +30,7 @@ disappears tomorrow, the notes are still there and still readable.
 From CherryTree: the tree of nodes, each with its own page and its children
 in a folder beside it. Text colour and highlight on any run of text, with a
 palette you drive from the keyboard. Code boxes you type straight into.
-Bullets that look like the ones you've been typing by hand for years (`-`,
+Bullets that look like the ones people type by hand in CherryTree (`-`,
 then `→`, then `⇒`). One line is one line: Enter gives you a new line, not a
 new paragraph with a gap. And the Linux muscle memory, ⌃C and ⌃V, ⌃Z and ⌃Y,
 ⇧⌥F and ⇧⌥B for colours.
@@ -111,14 +115,14 @@ Right-click a node for the same tree operations.
 **Markdown while typing** is on by default (Settings › Editor, or the Format
 menu). `**bold**`, `*italic*`, `` `code` ``, `~~strike~~` and ```` ``` ````
 fences format as you go, pasted plain text is read as Markdown, and labels
-like `[GOAL]` get tinted. `# ` deliberately stays as text, because I title
-sections as `#### Like This ####` and want them to stay that way; headings
-are on ⌥⌘1 to 3. Turn it off for a note full of regexes. `- ` and `1. `
+like `[GOAL]` get tinted. `# ` deliberately stays as text, so section titles
+written as `#### Like This ####` stay the way they were typed; headings are
+on ⌥⌘1 to 3. Turn it off for a note full of regexes. `- ` and `1. `
 lists work either way.
 
 **Bullets** show as `-`, then `→`, then `⇒` as you nest (then `•`, `◇`, `▪`),
-which is how my CherryTree notes were already typed by hand. The file still
-says `- `. Tab works on the first bullet of a list too, which most editors
+which is how CherryTree notes tend to be typed by hand. The file still says
+`- `. Tab works on the first bullet of a list too, which most editors
 refuse.
 
 **Colour stops where the coloured text stops.** Type after a red word, or
@@ -177,15 +181,15 @@ window, runs the script inside the page, prints its return value as
 
 ## Purely vibe coded
 
-I didn't write a line of this. The app, the converter, the on-disk format
-and this README all came out of Claude Code from requests like "colour
-should go back to white on the next character" and "Tab on the first bullet
-should make it deeper". My job was deciding what it should do, using it every
-day on a real notebook of about 800 nodes, and saying what felt wrong. Read
-the code with that in mind.
+Not a line of this was written by hand. The app, the converter, the on-disk
+format and this README all came out of Claude Code from requests like
+"colour should go back to white on the next character" and "Tab on the first
+bullet should make it deeper". The human's job was deciding what it should
+do, using it every day on a real notebook of about 800 nodes, and saying what
+felt wrong. Read the code with that in mind.
 
 ## Status
 
-Built for one person and used daily. Mac only for now, no sync, no plugins.
-If it ever eats your notes, they're still Markdown files in a folder, which
-was the whole point.
+Built for one person's notebook and used daily. Mac only for now, no sync,
+no plugins. If it ever eats your notes, they are still Markdown files in a
+folder, which was the whole point.
