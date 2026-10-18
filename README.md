@@ -159,6 +159,15 @@ Headless checks while developing: `NOTE4ME_HIDDEN=1 NOTE4ME_SHOT=out.png
 NOTE4ME_SHOT_JS='…' npx electron .` opens the app without showing a window,
 runs the script in the page, logs its return value as `shot js:` and exits.
 
+## Purely vibe coded
+
+Not a line of this was typed by hand. The whole app, the converter, the
+on-disk format and this README were written by Claude Code from plain
+English requests like "colour should revert on the next character" and
+"Tab on the first bullet should make it deeper". The human in the loop
+decided what it should do, used it on a real 800-node notebook every day,
+and reported what felt wrong. Read the code with that in mind.
+
 ## Status
 
 Built for one person's notebook and used daily. macOS only for now, English
