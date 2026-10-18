@@ -1529,8 +1529,20 @@ const commands = {
 };
 
 function runCommand(name, opts = {}) {
-  // the window handles shortcut keys itself; if the menu fires the same keystroke too, keep one
-  if (!opts.fromKey && state.lastShortcut && state.lastShortcut.cmd === name && Date.now() - state.lastShortcut.at < 150) return;
+  // One keystroke reaches the app twice: once as a key event the window handles
+  // itself (fromKey), once as the menu accelerator firing `send('cmd', …)`.
+  // Which arrives first depends on the key — ⌘ keys hit the window first, but
+  // ⌃/⌥/F keys hit the menu first — so the duplicate can come from either side.
+  // Drop a repeat of the same command from the *other* source within a short
+  // window, whichever order it lands in. Two real presses are both fromKey, so
+  // they share a source and are never dropped.
+  const src = opts.fromKey ? 'key' : 'menu';
+  const dup = state.lastShortcut;
+  if (dup && dup.cmd === name && dup.src !== src && Date.now() - dup.at < 150) {
+    state.lastShortcut = null;
+    return;
+  }
+  state.lastShortcut = { cmd: name, src, at: Date.now() };
   if (name.startsWith('theme:')) {
     const theme = name.slice(6);
     if (theme === 'custom' && !state.prefs.customTheme) {
@@ -1768,7 +1780,6 @@ function wire() {
     const cmd = sc.cmd || sc.id;
     e.preventDefault();
     e.stopPropagation();
-    state.lastShortcut = { cmd, at: Date.now() };
     runCommand(cmd, { fromKey: true });
   }, true);
 
