@@ -296,7 +296,7 @@ ipcMain.handle('node:delete', async (e, rel) => {
   return true;
 });
 
-ipcMain.handle('node:move', async (e, { rel, op }) => {
+ipcMain.handle('node:move', async (e, { rel, op, target }) => {
   const stem = path.posix.basename(rel, '.md');
   const { dir, stems } = await siblingsOf(rel);
   const dirAbs = abs(dir || '.');
@@ -320,14 +320,59 @@ ipcMain.handle('node:move', async (e, { rel, op }) => {
   if (op === 'outdent') {
     if (!dir) return rel;
     const parentDir = path.posix.dirname(dir) === '.' ? '' : path.posix.dirname(dir);
-    const r = await moveNode(dirAbs, stem, parentDir, abs(parentDir || '.'), path.posix.basename(dir));
+    const r = await moveNode(dirAbs, stem, parentDir, abs(parentDir || '.'), { after: path.posix.basename(dir) });
+    broadcastOthers(e.sender, 'notebook-changed');
+    return r;
+  }
+  if (op === 'into' || op === 'before' || op === 'after') {
+    const r = await moveTo(rel, op, typeof target === 'string' ? target : '');
     broadcastOthers(e.sender, 'notebook-changed');
     return r;
   }
   return rel;
 });
 
-async function moveNode(dirAbs, stem, targetRelDir, targetDirAbs, afterStem) {
+// Drag and drop: put `rel` inside `target` as its last child ('into'; an empty
+// target is the notebook root) or beside it ('before' / 'after'). A node can't
+// be dropped on itself or into its own subtree.
+async function moveTo(rel, op, target) {
+  const stem = path.posix.basename(rel, '.md');
+  const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
+  const ownDir = rel.replace(/\.md$/, '');
+  if (target === rel || target.startsWith(ownDir + '/')) return rel;
+  let targetDir;
+  let place = null;
+  if (op === 'into') targetDir = target ? target.replace(/\.md$/, '') : '';
+  else {
+    if (!target) return rel;
+    targetDir = path.posix.dirname(target) === '.' ? '' : path.posix.dirname(target);
+    place = { [op]: path.posix.basename(target, '.md') };
+  }
+  const dirAbs = abs(dir || '.');
+  const targetDirAbs = abs(targetDir || '.');
+  if (targetDir === dir) {
+    // Same folder: just reorder.
+    const { stems } = await siblingsOf(rel);
+    const without = stems.filter((s) => s !== stem);
+    placeIn(without, stem, place);
+    await writeOrder(dirAbs, without);
+    return rel;
+  }
+  if (!fssync.existsSync(path.join(dirAbs, stem + '.md'))) return rel;
+  return moveNode(dirAbs, stem, targetDir, targetDirAbs, place);
+}
+
+// Insert `stem` into a sibling list: after/before the named sibling, else at the end.
+function placeIn(list, stem, place) {
+  const ref = place ? (place.after ?? place.before) : undefined;
+  const i = ref !== undefined ? list.indexOf(ref) : -1;
+  if (i < 0) list.push(stem);
+  else list.splice(place.after !== undefined ? i + 1 : i, 0, stem);
+}
+
+// Move one node (its file, its children folder and its asset files) into
+// another folder. `place` is { after: stem } / { before: stem } or null (end).
+async function moveNode(dirAbs, stem, targetRelDir, targetDirAbs, place) {
   await fs.mkdir(targetDirAbs, { recursive: true });
   const newStem = await uniqueStem(targetDirAbs, stem);
   await fs.rename(path.join(dirAbs, stem + '.md'), path.join(targetDirAbs, newStem + '.md'));
@@ -354,9 +399,7 @@ async function moveNode(dirAbs, stem, targetRelDir, targetDirAbs, afterStem) {
   await writeOrder(dirAbs, oldOrder.filter((s) => s !== stem));
   const { stems } = await siblingsOf(path.posix.join(targetRelDir, newStem + '.md'));
   const without = stems.filter((s) => s !== newStem);
-  const idx = afterStem ? without.indexOf(afterStem) : -1;
-  if (idx >= 0) without.splice(idx + 1, 0, newStem);
-  else without.push(newStem);
+  placeIn(without, newStem, place);
   await writeOrder(targetDirAbs, without);
   return path.posix.join(targetRelDir, newStem + '.md');
 }

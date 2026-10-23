@@ -343,6 +343,25 @@ svg.ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-wid
   gap: 5px;
 }
 #tree li > .row:hover { background: var(--tree-hover); }
+/* drag and drop */
+#tree li > .row { position: relative; }
+#tree.dragging li > .row:hover { background: transparent; }
+#tree li > .row.dragging { opacity: 0.4; }
+#tree li > .row.drop-into { box-shadow: inset 0 0 0 2px var(--accent); }
+#tree li > .row.drop-before::before,
+#tree li > .row.drop-after::before {
+  content: '';
+  position: absolute;
+  left: calc(4px + var(--depth) * 16px);
+  right: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+#tree li > .row.drop-before::before { top: -1px; }
+#tree li > .row.drop-after::before { bottom: -1px; }
+#tree.drop-root { box-shadow: inset 0 -2px 0 var(--accent); }
 #tree li > .row.selected { background: var(--tree-sel-bg); color: var(--tree-sel-fg); }
 #tree:focus li > .row.selected { background: var(--accent); color: #fff; }
 #tree .twisty {

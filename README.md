@@ -91,6 +91,7 @@ top turns all of them off.
 | rename / delete node | F2 / ⌘⌫ (tree focused) |
 | move node up / down | ⌥⌘↑ / ⌥⌘↓ |
 | indent / outdent node | ⌥⌘→ / ⌥⌘← |
+| drag a node | drop onto a node to make it a child; drop on the top or bottom edge to place it before or after |
 | previous / next node | ⌘↑ / ⌘↓ |
 | bold / italic / underline / strike / mono | ⌘B / ⌘I / ⌘U / ⇧⌘X / ⌘E |
 | text colour / highlight palette | ⇧⌥F / ⇧⌥B |

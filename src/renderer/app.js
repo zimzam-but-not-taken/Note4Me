@@ -131,17 +131,54 @@ function codeLangsIn(doc) {
   doc.descendants((n) => { if (n.type.name === 'codeBlock' && n.attrs.language) out.add(n.attrs.language); });
   return out;
 }
+// A code box left on 'auto' (no language) is highlighted by lowlight's
+// highlightAuto, which only scores grammars that are already registered. With
+// lazy loading nothing is registered for an auto box, so detection finds
+// nothing and the box renders as plaintext. To restore auto-detection without
+// going back to eager-loading everything, load a curated common set the first
+// time the note actually contains an auto box. A note with no code box, or one
+// whose boxes all name a language, still loads none of these.
+const AUTODETECT = [
+  'bash', 'c', 'cpp', 'csharp', 'css', 'diff', 'dockerfile', 'go', 'ini',
+  'java', 'javascript', 'json', 'kotlin', 'lua', 'markdown', 'objectivec',
+  'php', 'python', 'ruby', 'rust', 'shell', 'sql', 'swift', 'typescript',
+  'xml', 'yaml',
+];
+// True once at least one auto-detect grammar is registered, so an auto box has
+// candidates to score against.
+function autodetectReady() { return AUTODETECT.some((k) => loadedLangs.has(k)); }
+// Load the auto-detect candidate set once; resolves true if any grammar became
+// newly available (so the caller can re-highlight).
+function ensureAutodetect() {
+  const need = AUTODETECT.filter((k) => !loadedLangs.has(k));
+  if (!need.length) return Promise.resolve(false);
+  return Promise.all(need.map(ensureLang)).then((r) => r.some(Boolean));
+}
+// Load the auto-detect set (e.g. an auto box was created or selected) then
+// re-highlight once the grammars land.
+function ensureAutodetectThenRehighlight() {
+  ensureAutodetect().then((loaded) => { if (loaded) rehighlightLoaded(); });
+}
+// Does the document contain a code box with no language (shown as 'auto')?
+function docHasAutoCode(doc) {
+  let found = false;
+  doc.descendants((n) => { if (!found && n.type.name === 'codeBlock' && !n.attrs.language) found = true; });
+  return found;
+}
 // Re-run highlighting on code boxes whose language just loaded, without
 // dirtying the note or touching undo history.
 let suppressDirty = false;
 function rehighlightLoaded() {
   if (!editor) return;
   const { state } = editor;
+  const autoReady = autodetectReady();
   let tr = null;
   state.doc.descendants((n, pos) => {
-    if (n.type.name === 'codeBlock' && n.attrs.language && loadedLangs.has(langKey(n.attrs.language))) {
-      tr = (tr || state.tr).setNodeMarkup(pos, undefined, { ...n.attrs });
-    }
+    if (n.type.name !== 'codeBlock') return;
+    // A languaged box repaints when its grammar is loaded; an auto box repaints
+    // once the auto-detect candidates are in place.
+    const ready = n.attrs.language ? loadedLangs.has(langKey(n.attrs.language)) : autoReady;
+    if (ready) tr = (tr || state.tr).setNodeMarkup(pos, undefined, { ...n.attrs });
   });
   if (!tr) return;
   tr.setMeta('addToHistory', false);
@@ -153,8 +190,11 @@ function rehighlightLoaded() {
 function ensureDocLangs() {
   if (!editor) return;
   const need = [...codeLangsIn(editor.state.doc)].filter((l) => langKey(l) && !loadedLangs.has(langKey(l)));
-  if (!need.length) return;
-  Promise.all(need.map(ensureLang)).then((r) => { if (r.some(Boolean)) rehighlightLoaded(); });
+  const jobs = need.map(ensureLang);
+  // Load the auto-detect set too if any box is on 'auto'.
+  if (docHasAutoCode(editor.state.doc)) jobs.push(ensureAutodetect());
+  if (!jobs.length) return;
+  Promise.all(jobs).then((r) => { if (r.some(Boolean)) rehighlightLoaded(); });
 }
 // Load one language (e.g. from the dropdown or a typed fence) then re-highlight.
 function ensureLangThenRehighlight(name) {
@@ -297,7 +337,7 @@ const MarkdownTyping = Extension.create({
     const gate = (rule) => new InputRule({ find: rule.find, handler: (p) => (mdOn() ? rule.handler(p) : null) });
     const mark = (find, name) => markInputRule({ find, type: schema.marks[name] });
     return [
-      textblockTypeInputRule({ find: /^```([\w+#-]*)\s$/, type: schema.nodes.codeBlock, getAttributes: (m) => { if (m[1]) ensureLangThenRehighlight(m[1]); return { language: m[1] || null }; } }),
+      textblockTypeInputRule({ find: /^```([\w+#-]*)\s$/, type: schema.nodes.codeBlock, getAttributes: (m) => { if (m[1]) ensureLangThenRehighlight(m[1]); else ensureAutodetectThenRehighlight(); return { language: m[1] || null }; } }),
       mark(/(?:^|\s)(\*\*(?!\s+\*\*)([^*]+)\*\*(?!\s+\*\*))$/, 'bold'),
       mark(/(?:^|\s)(__(?!\s+__)([^_]+)__(?!\s+__))$/, 'bold'),
       mark(/(?:^|\s)(\*(?!\s+\*)([^*]+)\*(?!\s+\*))$/, 'italic'),
@@ -976,6 +1016,7 @@ function renderTree() {
       row.style.setProperty('--depth', depth);
       row.innerHTML = `<span class="twisty ${hasKids ? '' : 'empty'}"><svg class="ic"><use href="#i-chevron"/></svg></span>${nodeIcon(depth, hasKids)}<span class="label"></span>`;
       row.querySelector('.label').textContent = n.title;
+      row.draggable = true;
       li.appendChild(row);
       let visible = true;
       if (hasKids) {
@@ -1137,12 +1178,37 @@ async function moveNode(op) {
   if (!rel) return;
   await saveCurrent();
   const newRel = await window.api.node.move({ rel, op });
+  await afterMove(rel, newRel);
+}
+
+// Drag and drop: put `rel` inside `target` ('into'; '' is the root) or beside it.
+async function dropNode(rel, op, target) {
+  if (!canDrop(rel, target)) return;
+  await saveCurrent();
+  const newRel = await window.api.node.move({ rel, op, target });
+  await afterMove(rel, newRel);
+}
+
+// A node can't be dropped on itself or anywhere inside its own subtree.
+function canDrop(rel, target) {
+  return target !== rel && !target.startsWith(rel.replace(/\.md$/, '') + '/');
+}
+
+// The node at `rel` is now at `newRel`: fix every rel we track (the open note
+// may be the moved node or one of its descendants), reload the tree and show
+// the node in its new place.
+async function afterMove(rel, newRel) {
   if (newRel !== rel) {
     remapCollapsed(rel, newRel);
-    state.current = newRel;
+    const oldDir = rel.replace(/\.md$/, '');
+    const newDir = newRel.replace(/\.md$/, '');
+    const remap = (r) => (r === rel ? newRel : r && r.startsWith(oldDir + '/') ? newDir + r.slice(oldDir.length) : r);
+    state.current = remap(state.current);
+    editorRel = remap(editorRel);
   }
   await refreshTree();
-  expandTo(state.current);
+  expandTo(newRel);
+  if (state.current) expandTo(state.current);
   renderTree();
   renderBreadcrumb();
 }
@@ -1289,6 +1355,7 @@ function toggleCodeBlock() {
   if (editor.isActive('codeBlock')) editor.chain().focus().toggleCodeBlock().run();
   else {
     if (state.lastLang) ensureLangThenRehighlight(state.lastLang);
+    else ensureAutodetectThenRehighlight();
     editor.chain().focus().toggleCodeBlock({ language: state.lastLang || null }).run();
   }
 }
@@ -1761,6 +1828,7 @@ function wire() {
   langSel.addEventListener('change', () => {
     state.lastLang = langSel.value;
     if (langSel.value) ensureLangThenRehighlight(langSel.value); // load the grammar; re-highlight when ready
+    else ensureAutodetectThenRehighlight(); // 'auto' selected: load detection candidates
     editor?.chain().focus().updateAttributes('codeBlock', { language: langSel.value || null }).run();
     persistPrefs();
   });
@@ -1831,6 +1899,79 @@ function wire() {
       menu.style.left = Math.min(e.clientX, window.innerWidth - 250) + 'px';
       menu.style.top = Math.min(e.clientY, window.innerHeight - 320) + 'px';
     });
+  });
+  // Drag a row onto another row: the top quarter drops before it, the bottom
+  // quarter after it, the middle makes it a child. The empty space below the
+  // tree drops at the end of the root. Hovering a folded node for a moment
+  // unfolds it so the drop can go deeper.
+  let drag = null; // { rel, overRel, zone, timer }
+  const zoneOf = (row, e) => {
+    const r = row.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    return y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'into';
+  };
+  const clearDropMarks = () => {
+    for (const el of treeEl.querySelectorAll('.drop-before, .drop-after, .drop-into')) el.classList.remove('drop-before', 'drop-after', 'drop-into');
+    treeEl.classList.remove('drop-root');
+    if (drag) { clearTimeout(drag.timer); drag.timer = null; drag.overRel = null; drag.zone = null; }
+  };
+  treeEl.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('.row');
+    if (!row || e.target.closest('input')) { e.preventDefault(); return; }
+    drag = { rel: row.parentElement.dataset.rel, overRel: null, zone: null, timer: null };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', drag.rel);
+    row.classList.add('dragging');
+    treeEl.classList.add('dragging');
+  });
+  treeEl.addEventListener('dragover', (e) => {
+    if (!drag) return;
+    const row = e.target.closest('.row');
+    const target = row ? row.parentElement.dataset.rel : '';
+    if (!canDrop(drag.rel, target)) { clearDropMarks(); return; }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const zone = row ? zoneOf(row, e) : 'root';
+    if (target === drag.overRel && zone === drag.zone) return;
+    clearDropMarks();
+    drag.overRel = target;
+    drag.zone = zone;
+    if (!row) { treeEl.classList.add('drop-root'); return; }
+    row.classList.add('drop-' + zone);
+    const li = row.parentElement;
+    if (zone === 'into' && li.classList.contains('collapsed')) {
+      // Unfold in place rather than re-rendering: rebuilding the tree mid-drag
+      // would pull the dragged row out of the DOM and end the drag.
+      drag.timer = setTimeout(() => {
+        if (!drag || drag.overRel !== target) return;
+        state.collapsed.delete(target);
+        persistCollapsed();
+        li.classList.remove('collapsed');
+        drag.overRel = null; // re-mark on the next dragover
+      }, 600);
+    }
+  });
+  treeEl.addEventListener('dragleave', (e) => {
+    // relatedTarget is unreliable mid-drag; only clear once the pointer is
+    // actually outside the tree, so moving between a row's parts keeps marks.
+    if (!drag) return;
+    const r = treeEl.getBoundingClientRect();
+    if (e.clientX <= r.left || e.clientX >= r.right || e.clientY <= r.top || e.clientY >= r.bottom) clearDropMarks();
+  });
+  treeEl.addEventListener('drop', (e) => {
+    if (!drag) return;
+    e.preventDefault();
+    const { rel, overRel, zone } = drag;
+    clearDropMarks();
+    if (!zone) return;
+    if (zone === 'root') dropNode(rel, 'into', '');
+    else dropNode(rel, zone, overRel);
+  });
+  treeEl.addEventListener('dragend', () => {
+    clearDropMarks();
+    drag = null;
+    treeEl.classList.remove('dragging');
+    for (const el of treeEl.querySelectorAll('.row.dragging')) el.classList.remove('dragging');
   });
   treeEl.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT') return;
